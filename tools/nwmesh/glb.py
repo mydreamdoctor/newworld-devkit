@@ -20,7 +20,8 @@ class Gltf:
                             'generator': 'nwmesh cgf2glb'},
                   'scene': 0, 'scenes': [{'nodes': []}],
                   'nodes': [], 'meshes': [], 'accessors': [],
-                  'bufferViews': [], 'materials': []}
+                  'bufferViews': [], 'materials': [],
+                  'images': [], 'textures': []}
         # Z-up (Cry) -> Y-up (glTF): -90 deg about X
         self.root = self.node('_cry_root', rotation=(-0.7071067811865476, 0, 0, 0.7071067811865476))
         self.g['scenes'][0]['nodes'].append(self.root)
@@ -42,10 +43,25 @@ class Gltf:
             self.g['nodes'][parent].setdefault('children', []).append(idx)
         return idx
 
-    def material(self, name):
-        self.g['materials'].append({'name': name,
-                                    'pbrMetallicRoughness': {}})
+    def material(self, name, base_image=None, normal_image=None,
+                 base_color=None):
+        """base_image/normal_image: image indexes. base_color: rgba."""
+        pbr = {}
+        if base_image is not None:
+            pbr['baseColorTexture'] = {'index': base_image}
+        if base_color is not None:
+            pbr['baseColorFactor'] = list(base_color)
+        m = {'name': name, 'pbrMetallicRoughness': pbr}
+        if normal_image is not None:
+            m['normalTexture'] = {'index': normal_image}
+        self.g['materials'].append(m)
         return len(self.g['materials']) - 1
+
+    def image(self, uri):
+        """External image referenced by URI (relative to the .glb)."""
+        self.g['images'].append({'uri': uri})
+        self.g['textures'].append({'source': len(self.g['images']) - 1})
+        return len(self.g['textures']) - 1
 
     def accessor(self, ctype, atype, data, count=None, normalized=False,
                  target=None):

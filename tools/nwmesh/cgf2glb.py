@@ -34,15 +34,27 @@ def _normals(pos, idx):
             else (0.0, 0.0, 1.0) for x, y, z in n]
 
 
-def convert(src, dst):
+def convert(src, dst, texmap=None):
+    """texmap: {sub-material name: {'baseColor': fname, 'normal': fname}}
+    — image URIs resolved relative to the written .glb."""
     c = cgf.load(src)
     g = Gltf()
-    nmat = 0
+    texmap = texmap or {}
+    img_idx = {}
+
+    def _img(fname):
+        if fname not in img_idx:
+            img_idx[fname] = g.image(fname)
+        return img_idx[fname]
+
     mat_ids = []
     for s in (c.mtl_subs or [c.mtl or os.path.basename(src)]):
-        mat_ids.append(g.material(s if isinstance(s, str) else
-                                  'mat%d' % len(mat_ids)))
-        nmat += 1
+        name = s if isinstance(s, str) else 'mat%d' % len(mat_ids)
+        t = texmap.get(name, {})
+        mat_ids.append(g.material(
+            name,
+            base_image=_img(t['baseColor']) if 'baseColor' in t else None,
+            normal_image=_img(t['normal']) if 'normal' in t else None))
     nid_to_gltf = {}
     for nodeid, n in c.nodes.items():
         # Cry row-major flat == glTF column-major flat (v' = v*M)
