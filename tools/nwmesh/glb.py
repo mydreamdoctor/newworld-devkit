@@ -26,13 +26,15 @@ class Gltf:
         self.root = self.node('_cry_root', rotation=(-0.7071067811865476, 0, 0, 0.7071067811865476))
         self.g['scenes'][0]['nodes'].append(self.root)
 
-    def node(self, name, matrix=None, rotation=None, children=None,
-             mesh=None, parent=None):
+    def node(self, name, matrix=None, rotation=None, translation=None,
+             children=None, mesh=None, parent=None):
         n = {'name': name}
         if matrix is not None:
             n['matrix'] = matrix
         if rotation is not None:
             n['rotation'] = list(rotation)
+        if translation is not None:
+            n['translation'] = list(translation)
         if mesh is not None:
             n['mesh'] = mesh
         if children:
@@ -89,6 +91,9 @@ class Gltf:
                'type': atype}
         if normalized:
             acc['normalized'] = True
+        if atype == 'SCALAR' and ctype == 5126 and flat:
+            acc['min'] = [min(flat)]
+            acc['max'] = [max(flat)]
         if atype == 'VEC3' and ctype == 5126 and flat:
             xs, ys, zs = flat[0::3], flat[1::3], flat[2::3]
             acc['min'] = [min(xs), min(ys), min(zs)]
@@ -100,6 +105,24 @@ class Gltf:
         """primitives: [{'attributes':{}, 'indices':acc, 'material':i}]"""
         self.g['meshes'].append({'primitives': primitives})
         return len(self.g['meshes']) - 1
+
+    def animation(self, name, channels):
+        """channels: [(node_idx, 'rotation'|'translation', times, values)].
+
+        times: list of seconds -> SCALAR f32 accessor; values: VEC4 quat
+        or VEC3 f32 accessor. One glTF animation, LINEAR samplers.
+        """
+        samplers, chans = [], []
+        for node, path, times, values in channels:
+            tin = self.accessor(5126, 'SCALAR', times)
+            tout = self.accessor(5126, 'VEC4' if path == 'rotation' else 'VEC3',
+                                 values)
+            samplers.append({'input': tin, 'output': tout,
+                             'interpolation': 'LINEAR'})
+            chans.append({'sampler': len(samplers) - 1,
+                          'target': {'node': node, 'path': path}})
+        self.g.setdefault('animations', []).append(
+            {'name': name, 'samplers': samplers, 'channels': chans})
 
     def write(self, path):
         g = dict(self.g)
