@@ -13,4 +13,9 @@
   never copy).
 - Build/test layout: everything under `build/` (gitignored). Verified recipe and
   stage-1 findings are in the graphiti store and in `NW-STAGE1-FINDINGS.md`.
+- 🔴 **Check free RAM before launching the Editor or AssetProcessor.** This host
+  is shared with other heavy work and the machine has OOM-crashed once already.
+  Run `free -g` first; if free+cache is under ~24 GiB, do not launch — tell the
+  owner instead. One editor + one AP at a time; kill stragglers (`pgrep -af
+  'profile/(Editor|AssetProcessor)'`) before a new run.
 - Plan of record: project-mcp `prj_147a0f93` (dashboard http://127.0.0.1:8090).
