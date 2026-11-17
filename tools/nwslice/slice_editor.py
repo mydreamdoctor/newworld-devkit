@@ -67,6 +67,20 @@ def _set_val(e, value_str):
             import uuid
             e['val'] = uuid.UUID(value_str).bytes
             return True
+        if tn == 'Transform' and len(old) == 48:
+            # "x,y,z" patches the translation column; 12 floats replace
+            # the whole 3x4 row-major matrix (big-endian, AZ layout).
+            fs = [float(v) for v in
+                  value_str.replace(',', ' ').split()]
+            if len(fs) == 3:
+                f32 = list(struct.unpack('>12f', old))
+                f32[9:12] = fs
+                e['val'] = struct.pack('>12f', *f32)
+                return True
+            if len(fs) == 12:
+                e['val'] = struct.pack('>12f', *fs)
+                return True
+            return False
         p = slice_view._PRIMS.get(tn)
         if p and len(old) == p[1]:
             if p[0] == '<?':
@@ -162,7 +176,9 @@ class SliceEditor(QtWidgets.QMainWindow):
 
     def _fill(self, e, parent):
         for k in e.get('ch', []):
-            fn = river_io.FN.get(k.get('crc'), k.get('crc'))
+            crc = k.get('crc')
+            fn = river_io.FN.get('%08x' % crc, crc) \
+                if isinstance(crc, int) else crc
             label = fn if isinstance(fn, str) else (
                 'crc_%08x' % fn if isinstance(fn, int) else 'field')
             tn = slice_view.type_name(k['id'])
