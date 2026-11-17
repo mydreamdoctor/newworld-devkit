@@ -117,6 +117,12 @@ def convert(raw, level_name='Level'):
             f = _by_crc(gt, 'm_worldTM')
             if f is not None and 'val' in f:
                 tm = _f32s(f['val'])
+        if tm is None:
+            tc = comps.get('TransformComponent')
+            if tc is not None:
+                f = _by_crc(tc, 'Transform')
+                if f is not None and 'val' in f and len(f['val']) == 48:
+                    tm = _f32s(f['val'])
         td = {'Translate': [tm[9], tm[10], tm[11]] if tm else [0, 0, 0]}
         rot = _euler_deg(tm) if tm else None
         if rot:
@@ -125,7 +131,8 @@ def convert(raw, level_name='Level'):
                       'Transform Data': td, 'Parent Entity': 'Entity_[1]'})
         unmapped = []
         for tname, cel in comps.items():
-            if tname in ('GameTransformComponent', 'AZ::Component'):
+            if tname in ('GameTransformComponent', 'AZ::Component',
+                         'TransformComponent'):
                 continue
             if tname == 'SplineComponent':
                 try:

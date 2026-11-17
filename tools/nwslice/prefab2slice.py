@@ -118,37 +118,53 @@ def convert(slice_raw, prefab, level_name=None):
             report['unmatched_prefab'].append(name)
             continue
         used.add(id(comps))
+        # transform fields to patch: GameTransformComponent.m_worldTM,
+        # or the Lumberyard TransformComponent's Transform (world) plus
+        # LocalTransform when it currently equals Transform (entity has
+        # no real parent transform -> local == world).
+        fields = []
         gt = comps.get('GameTransformComponent')
-        if gt is None:
-            continue
-        f = _by_crc(gt, 'm_worldTM')
-        if f is None or 'val' not in f:
-            continue
-        old = _f32s(f['val'])
-        new = list(old)
-        changed = False
-        # translation: patch only if it moved (keeps untouched bytes exact)
-        if any(abs(a - b) > 1e-4 for a, b in zip(tr, old[9:12])):
-            new[9:12] = tr
-            changed = True
-        # rotation: rebuild basis only if the euler changed, preserving
-        # the source per-column scale
-        old_rot = _euler_deg(old) or [0.0, 0.0, 0.0]
-        new_rot = rot or [0.0, 0.0, 0.0]
-        if any(abs(a - b) > 1e-3 for a, b in zip(new_rot, old_rot)):
-            rb = _mat34(tr, rot)[:9]
-            for b in range(3):
-                o = _m.sqrt(old[b * 3] ** 2 + old[b * 3 + 1] ** 2
-                            + old[b * 3 + 2] ** 2)
-                if o > 1e-9:
-                    for r in range(3):
-                        rb[b * 3 + r] *= o
-            new[:9] = rb
-            changed = True
-        if not changed:
-            continue
-        f['val'] = _pf32s(new)
-        report['updated'] += 1
+        if gt is not None:
+            f = _by_crc(gt, 'm_worldTM')
+            if f is not None and 'val' in f:
+                fields.append(f)
+        tc = comps.get('TransformComponent')
+        if tc is not None:
+            wf = _by_crc(tc, 'Transform')
+            lf = _by_crc(tc, 'LocalTransform')
+            if wf is not None and 'val' in wf and len(wf['val']) == 48:
+                fields.append(wf)
+                if (lf is not None and 'val' in lf
+                        and len(lf['val']) == 48
+                        and _f32s(lf['val']) == _f32s(wf['val'])):
+                    fields.append(lf)
+        for f in fields:
+            old = _f32s(f['val'])
+            new = list(old)
+            changed = False
+            # translation: patch only if it moved (keeps untouched bytes
+            # exact)
+            if any(abs(a - b) > 1e-4 for a, b in zip(tr, old[9:12])):
+                new[9:12] = tr
+                changed = True
+            # rotation: rebuild basis only if the euler changed,
+            # preserving the source per-column scale
+            old_rot = _euler_deg(old) or [0.0, 0.0, 0.0]
+            new_rot = rot or [0.0, 0.0, 0.0]
+            if any(abs(a - b) > 1e-3 for a, b in zip(new_rot, old_rot)):
+                rb = _mat34(tr, rot)[:9]
+                for b in range(3):
+                    o = _m.sqrt(old[b * 3] ** 2 + old[b * 3 + 1] ** 2
+                                + old[b * 3 + 2] ** 2)
+                    if o > 1e-9:
+                        for r in range(3):
+                            rb[b * 3 + r] *= o
+                new[:9] = rb
+                changed = True
+            if not changed:
+                continue
+            f['val'] = _pf32s(new)
+            report['updated'] += 1
         sc = comps.get('SplineComponent')
         if sc is not None:
             for c in pcomps.values():
