@@ -20,10 +20,14 @@ rows the same way, so rows are written UNFLIPPED (verified in-editor).
 Asset GUIDs: AZ CreateName = sha1(lowercase source path)[0:16] + uuid v5
 variant bits (verified against Lockstep m2-remoteplayer-slice.md table).
 """
-import argparse, hashlib, json, os, re, sys, uuid
+import argparse, glob, hashlib, json, os, re, sys, uuid, zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               '..', 'nwmat'))
 from heightmap import decode, encode
 import terrainjson as _tj
+import mtl as _mtl
+import dds as _dds
 
 TRANSFORM_COMPONENT = '{27F1E1A1-8D9D-4C3B-BD3A-AFB9762449C0} TransformComponent'
 
@@ -70,8 +74,161 @@ def transform(tx, ty, tz, parent=''):
             'Parent Entity': parent}
 
 
-def build_prefab(level, regions):
-    """regions: [(name,(ix,iy),size,mountainHeight,img_hint)]"""
+def _img(hint):
+    """StreamingImage assetId for a source image at scan-relative `hint`."""
+    return {'assetId': {'guid': '{%s}' % asset_guid(hint), 'subId': 1000},
+            'assetHint': hint + '.streamingimage'}
+
+
+def _azmat(hint):
+    """AzMaterial assetId for a source .material at scan-relative `hint`
+    (product subId 0, verified against assetdb.sqlite)."""
+    return {'assetId': {'guid': '{%s}' % asset_guid(hint), 'subId': 0},
+            'assetHint': re.sub(r'\.material$', '.azmaterial', hint)}
+
+
+_LAYER_RE = re.compile(
+    r'field="Material" value="[^"]*hint=\{([^}]+)\}[^"]*"'
+    r'.*?field="SplatMap" value="[^"]*hint=\{([^}]+)\}', re.S)
+
+TERRAIN_DETAIL_MATERIALTYPE = \
+    'Materials/Terrain/TerrainDetailMaterial.materialtype'
+
+
+def _layer_material(sub, tex_rel, name):
+    """StandardPBR-shaped properties on the TerrainDetailMaterial type —
+    same property groups, plus the parallax overrides the terrain detail
+    shader uses. tex_rel: {slot: scan-relative texture source path}."""
+    props = {}
+    if 'Diffuse' in tex_rel:
+        props['baseColor'] = {'textureMap': tex_rel['Diffuse'],
+                              'useTexture': True}
+    if 'Bumpmap' in tex_rel:
+        props['normal'] = {'textureMap': tex_rel['Bumpmap'],
+                           'useTexture': True}
+    if 'Specular' in tex_rel:
+        props['specularF0'] = {'textureMap': tex_rel['Specular'],
+                               'useTexture': True}
+    return {'description': 'NW terrain layer %s' % name,
+            'materialType': TERRAIN_DETAIL_MATERIALTYPE,
+            'parentMaterial': '',
+            'materialTypeVersion': 1,
+            'properties': props}
+
+
+def _find_tex(file_ref, out_root):
+    """Locate an mtl texture ref as a project source; try the ref, the
+    .dds swap, and a case-insensitive basename search under out_root."""
+    ref = file_ref.replace('\\', '/').lstrip('/')
+    for cand in (ref, os.path.splitext(ref)[0] + '.dds'):
+        if os.path.isfile(os.path.join(out_root, cand)):
+            return cand.replace(os.sep, '/')
+    base = os.path.splitext(os.path.basename(ref))[0] + '.dds'
+    for p in glob.glob(os.path.join(out_root, '**', base), recursive=True):
+        return os.path.relpath(p, out_root).replace(os.sep, '/')
+    for p in glob.glob(os.path.join(out_root, '**',
+                                    os.path.basename(ref).lower()),
+                       recursive=True):
+        return os.path.relpath(p, out_root).replace(os.sep, '/')
+    return None
+
+
+def build_surfaces(level, src, out, rname):
+    """Turn the client's regionmat (in <src>/terrainmat/) into O3DE terrain
+    surface data for region `rname`:
+
+      Levels/<level>/splats/<tag>.dds          reassembled splat images
+      Levels/<level>/terrain_layers/<tag>.material  detail materials
+      Levels/<level>/macro/macro_<c|n>.dds     reassembled macro maps
+
+    Returns (gradients, materials, macros):
+      gradients  [(tag_crc, splat_scan_hint)]
+      materials  [(tag_crc, material_scan_hint)]
+      macros     (color_hint, normal_hint) or None
+    Only layers whose splat actually reassembles (>1KiB — most of the 65
+    declared layers are empty stubs) are emitted.
+    """
+    tdir = os.path.join(src, 'terrainmat')
+    rms = glob.glob(os.path.join(tdir, '*.regionmat'))
+    if not rms:
+        return [], [], None
+    rm = open(rms[0], errors='replace').read()
+    splat_dir = os.path.join(lvl := os.path.join(
+        out, 'Levels', level), 'splats')
+    layer_dir = os.path.join(lvl, 'terrain_layers')
+    gradients, materials = [], []
+    for mtl_hint, splat_hint in _LAYER_RE.findall(rm):
+        # nw_arena_3v3_04_0.0.<tag>_splat.dds -> <tag>
+        tag = os.path.basename(splat_hint)[:-len('.dds')].rsplit('.', 1)[-1]
+        tag = tag.replace('_splat', '')
+        # splat source lives beside the regionmat under terrainmat/
+        splat_src = os.path.join(tdir, os.path.basename(splat_hint))
+        if not os.path.isfile(splat_src):
+            continue
+        try:
+            blob = _dds.reassemble(splat_src)
+        except Exception:
+            continue
+        if len(blob) < 1024:
+            continue
+        os.makedirs(splat_dir, exist_ok=True)
+        splat_name = tag + '_splat.dds'
+        with open(os.path.join(splat_dir, splat_name), 'wb') as f:
+            f.write(blob)
+        # layer detail material from the client .mtl
+        mtl_path = os.path.join(tdir, os.path.basename(mtl_hint))
+        if not os.path.isfile(mtl_path):
+            hits = glob.glob(os.path.join(
+                src, '**', os.path.basename(mtl_hint)), recursive=True)
+            if not hits:
+                continue
+            mtl_path = hits[0]
+        m = _mtl.Mtl.load(mtl_path)
+        if not m.subs:
+            continue
+        tex_rel = {}
+        for slot, ref in m.subs[0].textures.items():
+            rel = _find_tex(ref, out)
+            if rel:
+                tex_rel[slot] = rel
+        os.makedirs(layer_dir, exist_ok=True)
+        mat_name = tag + '.material'
+        with open(os.path.join(layer_dir, mat_name), 'w') as f:
+            json.dump(_layer_material(m.subs[0], tex_rel, tag), f, indent=1)
+        crc = zlib.crc32(tag.encode()) & 0xFFFFFFFF
+        gradients.append((crc,
+                          'levels/%s/splats/%s' % (level.lower(), splat_name)))
+        materials.append((crc,
+                          'levels/%s/terrain_layers/%s'
+                          % (level.lower(), mat_name)))
+        print('  layer %-10s splat=%dB tex=%s' % (tag, len(blob), tex_rel))
+    macros = None
+    macro_dir = os.path.join(lvl, 'macro')
+    mc, mn = {}, {}
+    for kind, pat in (('color', 'macro_diff'), ('normal', 'macro_ddn')):
+        hits = glob.glob(os.path.join(tdir, '*' + pat + '.dds'))
+        if hits:
+            try:
+                blob = _dds.reassemble(hits[0])
+            except Exception:
+                continue
+            if len(blob) >= 1024:
+                os.makedirs(macro_dir, exist_ok=True)
+                name = pat + '.dds'
+                with open(os.path.join(macro_dir, name), 'wb') as f:
+                    f.write(blob)
+                (mc if kind == 'color' else mn)['hint'] = \
+                    'levels/%s/macro/%s' % (level.lower(), name)
+    if mc and mn:
+        macros = (mc['hint'], mn['hint'])
+    return gradients, materials, macros
+
+
+def build_prefab(level, regions, surfaces=None):
+    """regions: [(name,(ix,iy),size,mountainHeight,img_hint)]
+    surfaces: {region_name: (gradients, materials, macros)} from
+    build_surfaces — detail-material/splat/macro bindings."""
+    surfaces = surfaces or {}
     ents = {}
     for name, (ix, iy), size, mh, hint in regions:
         cx, cy = ix * size + size / 2.0, iy * size + size / 2.0
@@ -94,9 +251,7 @@ def build_prefab(level, regions):
                 'Translate': [cx, cy, mh / 2.0]}),
             {'$type': 'EditorImageGradientComponent', 'Id': nid(),
              'Previewer': {'BoundsEntity': ''},
-             'Configuration': {'StreamingImageAsset': {
-                 'assetId': {'guid': '{%s}' % asset_guid(hint), 'subId': 1000},
-                 'assetHint': hint + '.streamingimage'}}},
+             'Configuration': {'StreamingImageAsset': _img(hint)}},
         ])
         # backpatch the gradient entity ref
         for c in se['Components'].values():
@@ -104,6 +259,41 @@ def build_prefab(level, regions):
                 c['Configuration']['GradientEntities'] = [geid]
         ents[seid] = se
         ents[geid] = ge
+        gradients, materials, macros = surfaces.get(name, ([], [], None))
+        grad_maps = []
+        for crc, shint in gradients:
+            sgid, sge = entity('SplatGradient_' + name + '_' + shint.rsplit(
+                '/', 1)[-1].replace('_splat.dds', ''), [
+                transform(0.0, 0.0, 0.0, parent=seid),
+                comp('EditorReferenceShapeComponent', {'ShapeEntityId': seid}),
+                comp('EditorGradientTransformComponent', {
+                    'ShapeReference': '',
+                    'Bounds': [size, size, mh],
+                    'Translate': [cx, cy, mh / 2.0]}),
+                {'$type': 'EditorImageGradientComponent', 'Id': nid(),
+                 'Previewer': {'BoundsEntity': ''},
+                 'Configuration': {'StreamingImageAsset': _img(shint)}},
+            ])
+            ents[sgid] = sge
+            grad_maps.append({'Gradient Entity': sgid,
+                              'Surface Tag': {'SurfaceTagCrc': crc}})
+        if grad_maps:
+            se['Components']['Component_[%d]' % len(se['Components'])] = comp(
+                'EditorTerrainSurfaceGradientListComponent',
+                {'Mappings': grad_maps})
+        if materials:
+            mat_maps = [{'Surface': {'SurfaceTagCrc': crc},
+                         'MaterialAsset': _azmat(mhint)}
+                        for crc, mhint in materials]
+            se['Components']['Component_[%d]' % len(se['Components'])] = comp(
+                'EditorTerrainSurfaceMaterialsListComponent',
+                {'DefaultMaterial': mat_maps[0], 'Mappings': mat_maps})
+        if macros:
+            color_hint, normal_hint = macros
+            se['Components']['Component_[%d]' % len(se['Components'])] = comp(
+                'EditorTerrainMacroMaterialComponent',
+                {'MacroColor': _img(color_hint),
+                 'MacroNormal': _img(normal_hint)})
     mh = regions[0][3] if regions else 2048.0
     container = {
         'Id': 'Entity_[1]', 'Name': 'Level',
@@ -134,7 +324,11 @@ def main():
     os.makedirs(img_dir, exist_ok=True)
     regions = []
     rdir = os.path.join(src, 'regions')
+    if not os.path.isdir(rdir):
+        rdir = src  # region dirs may sit directly under the level dir
     for rname in sorted(os.listdir(rdir)):
+        if not rname.startswith('r_'):
+            continue
         hm_path = os.path.join(rdir, rname, 'region.heightmap')
         if not os.path.isfile(hm_path):
             continue
@@ -158,7 +352,16 @@ def main():
         hint = 'levels/%s/heightmaps/%s.tif' % (level.lower(), rname)
         regions.append((rname, (ix, iy), hm.w, mh, hint))
         print('  %s: %dx%d -> %s' % (rname, hm.w, hm.h, tif))
-    prefab = build_prefab(level, regions)
+    # client terrain surface layers (regionmat splats + detail materials)
+    surfaces = {}
+    rms = glob.glob(os.path.join(src, 'terrainmat', '*.regionmat'))
+    if rms:
+        m = re.search(r'_(\d+)_(\d+)\.regionmat$', os.path.basename(rms[0]))
+        tile = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+        for rname, (ix, iy), _size, _mh, _hint in regions:
+            if (ix, iy) == tile:
+                surfaces[rname] = build_surfaces(level, src, a.out, rname)
+    prefab = build_prefab(level, regions, surfaces)
     ppath = os.path.join(lvl_dir, level + '.prefab')
     with open(ppath, 'w') as f:
         json.dump(prefab, f, indent=1)

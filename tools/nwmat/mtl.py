@@ -91,6 +91,13 @@ class Mtl(object):
                     sm = SubMaterial(el)
                     m.subs.append(sm)
                     m.by_name[sm.name] = sm
+        else:
+            # single-material .mtl (terrain layers etc.): textures live
+            # on the root element
+            sm = SubMaterial(root)
+            m.subs.append(sm)
+            if sm.name:
+                m.by_name[sm.name] = sm
         return m
 
     @classmethod

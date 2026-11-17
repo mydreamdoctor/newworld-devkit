@@ -17,7 +17,9 @@ Usage:
 import argparse
 import json
 import math
+import glob
 import os
+import re
 import shutil
 import sys
 
@@ -177,7 +179,17 @@ def main():
         print('  %s: %dx%d' % (rname, hm.w, hm.h))
 
     nw2level._next_id[0] = 1  # shared id counter
-    prefab = nw2level.build_prefab(a.name, regions)
+    # client terrain surface layers (regionmat splats + detail materials)
+    surfaces = {}
+    rms = glob.glob(os.path.join(src, 'terrainmat', '*.regionmat'))
+    if rms:
+        m = re.search(r'_(\d+)_(\d+)\.regionmat$', os.path.basename(rms[0]))
+        tile = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+        for rname, (ix, iy), _s, _m, _h in regions:
+            if (ix, iy) == tile:
+                surfaces[rname] = nw2level.build_surfaces(
+                    a.name, src, a.out, rname)
+    prefab = nw2level.build_prefab(a.name, regions, surfaces)
     prefab['ContainerEntity']['Name'] = a.name
 
     merged_ids = []
@@ -190,6 +202,7 @@ def main():
               % (os.path.basename(spath), n, len(skipped)))
 
     if a.at:
+        nw2level._next_id[0] = _max_eid(prefab)  # merge remap bypassed nid()
         eid, pe = nw2level.entity(
             'SlicePlacement',
             [nw2level.transform(*a.at, parent='Entity_[1]')])
