@@ -93,14 +93,21 @@ def on_create_jobs(args):
             raise RuntimeError('no fullPath')
         scan_root = _scan_root(request)
         mtl_path, mats = _mesh_materials(full)
+        def _in_root(p):
+            r = _rel(p, scan_root)
+            return r if not r.startswith('..') else None
         if mtl_path:
-            deps.append(azlmbr.asset.builder.SourceFileDependency(
-                _rel(mtl_path, scan_root), null, 0))
+            mr = _in_root(mtl_path)
+            if mr:
+                deps.append(azlmbr.asset.builder.SourceFileDependency(
+                    mr, null, 0))
             for tex in mats.values():
                 for p in tex.values():
                     for dp in [p] + nwdds.mip_parts(p):
-                        deps.append(azlmbr.asset.builder.SourceFileDependency(
-                            _rel(dp, scan_root), null, 0))
+                        dr = _in_root(dp)
+                        if dr:
+                            deps.append(azlmbr.asset.builder.SourceFileDependency(
+                                dr, null, 0))
     except Exception as e:
         print('nw_cgf_builder dep scan failed: %s' % e)
     response.sourceFileDependencyList = deps
@@ -203,7 +210,7 @@ def register():
     desc = azlmbr.asset.builder.AssetBuilderDesc()
     desc.name = 'NW CGF Builder'
     desc.busId = BUS_ID
-    desc.version = 8
+    desc.version = 12
     pats = []
     for pat in ('*.cgf', '*.cgfheap', '*.skin'):
         p = azlmbr.asset.builder.AssetBuilderPattern()

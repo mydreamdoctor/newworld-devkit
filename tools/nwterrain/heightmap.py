@@ -148,9 +148,11 @@ def decode(d):
     return hm
 
 
-def encode(hm, lzw=True, rps=4):
+def encode(hm, lzw=True, rps=4, flip_y=False):
     """Heightmap -> region.heightmap bytes (native profile: LZW, predictor 2,
-    4-row strips; or uncompressed when lzw=False)."""
+    4-row strips; or uncompressed when lzw=False). flip_y writes image rows
+    bottom-up: O3DE's ImageGradient inverts Y when sampling, so a TIFF meant
+    for it must store row 0 = max world-Y to render unflipped."""
     w, h = hm.w, hm.h
     nstrips = (h + rps - 1) // rps
     strips = []
@@ -158,7 +160,10 @@ def encode(hm, lzw=True, rps=4):
         rows = min(rps, h - k * rps)
         a = array.array('H')
         for r in range(rows):
-            row = list(hm.raw[(k * rps + r) * w:(k * rps + r + 1) * w])
+            src = k * rps + r
+            if flip_y:
+                src = h - 1 - src
+            row = list(hm.raw[src * w:(src + 1) * w])
             if lzw:
                 for x in range(w - 1, 0, -1):
                     row[x] = (row[x] - row[x - 1]) & 0xffff

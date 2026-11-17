@@ -71,11 +71,11 @@ def _stream_desc(d, chunk, heap):
     if t == CHUNK_DATASTREAM:
         fl, stype, _x, ncount, esz, _y, _z = struct.unpack_from('<7I', d, o)
         hdr = s - ncount * esz  # NW carries a 28B header (7 u32)
-        return d[o + hdr:o + s], ncount, esz, 'inline'
+        return d[o + hdr:o + s], ncount, esz, 'inline', None
     if t == CHUNK_HEAPSTREAM:
         _k, kind, hoff, hsize, stride = struct.unpack_from('<5I', d, o)
         ncount = hsize // stride if stride else 0
-        return heap[hoff:hoff + hsize], ncount, stride, 'heap'
+        return heap[hoff:hoff + hsize], ncount, stride, 'heap', kind
     raise ValueError('chunk id %d type 0x%x is not a stream' % (cid, t))
 
 
@@ -118,9 +118,32 @@ def _half(v):
     return struct.unpack_from('<e', struct.pack('<e', v))[0]
 
 
-def decode_stream(stype, data, ncount, esz):
-    """Decode a stream blob to a python list per element."""
+def decode_stream(stype, data, ncount, esz, kind=None):
+    """Decode a stream blob to a python list per element.
+
+    kind==1 heap streams are packed vertices shared by stypes 0/2/3:
+    stride 16 = {pos 4xf16, col RGBA8, uv 2xf16},
+    stride 24 = {pos 3xf32, col RGBA8, uv 2xf32}."""
     u = struct.unpack_from
+    if kind == 1:
+        if stype == ST_POS:
+            if esz == 16:
+                return [u('<3e', data, i * 16) for i in range(ncount)]
+            if esz == 24:
+                return [u('<3f', data, i * 24) for i in range(ncount)]
+        if stype == ST_UV:
+            if esz == 16:
+                return [u('<2e', data, i * 16 + 12) for i in range(ncount)]
+            if esz == 24:
+                return [u('<2f', data, i * 24 + 16) for i in range(ncount)]
+        if stype in (ST_COLOR, ST_COLOR2):
+            if esz == 16:
+                return [tuple(data[i * 16 + 8:i * 16 + 12])
+                        for i in range(ncount)]
+            if esz == 24:
+                return [tuple(data[i * 24 + 12:i * 24 + 16])
+                        for i in range(ncount)]
+        return None
     if stype == ST_INDEX:
         f = 'H' if esz == 2 else 'I'
         return [u('<' + f, data, i * esz)[0] for i in range(ncount)]
@@ -205,8 +228,9 @@ class Cgf:
                 c = self.byid.get(cid)
                 if not c:
                     continue
-                blob, n, esz, src = _stream_desc(self.d, c, self.heap)
-                dec = decode_stream(stype, blob, n, esz)
+                blob, n, esz, src, kind = _stream_desc(
+                    self.d, c, self.heap)
+                dec = decode_stream(stype, blob, n, esz, kind)
                 out[stype] = (dec, src, esz)
                 break  # first stream of this type
         return out

@@ -92,7 +92,12 @@ def on_process_job(args):
                     tex_rel[mp] = rel
             mat, unmapped = mtl2atom.to_atom(sub, tex_rel)
             stem = os.path.splitext(os.path.basename(request.fullPath))[0]
-            name = sub.name if len(m.subs) > 1 else (sub.name or stem)
+            # Multi-sub mtls share sub-material names across sibling mtls
+            # (e.g. legion_arch_01_d_mat emits legion_arch_01_c.material);
+            # prefix the mtl stem so product paths stay unique per source.
+            name = sub.name or stem
+            if len(m.subs) > 1:
+                name = stem + '__' + name
             dst = os.path.join(request.tempDirPath, name + '.material')
             with open(dst, 'w') as f:
                 json.dump(mat, f, indent=4)

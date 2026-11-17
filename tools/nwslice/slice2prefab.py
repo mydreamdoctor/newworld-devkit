@@ -14,7 +14,7 @@ Every other component type is skipped and listed under "skipped" in the
 
 Usage: slice2prefab.py SLICE -o out.prefab [--sidecar out.json]
 """
-import argparse, json, math as _m, os, struct, sys
+import argparse, hashlib, json, math as _m, os, re, struct, sys, uuid, zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from osv3 import parse_objectstream
 import river_io
@@ -111,6 +111,106 @@ def _find_crc(el, name):
     return None
 
 
+def _asset_guid(path):
+    """AZ::Uuid::CreateName(lowercase path): sha1[0:16] + v5 bits."""
+    h = bytearray(hashlib.sha1(path.lower().encode()).digest()[:16])
+    h[6] = (h[6] & 0x0f) | 0x50
+    h[8] = (h[8] & 0x3f) | 0x80
+    return str(uuid.UUID(bytes=bytes(h))).upper()
+
+
+
+def _mesh_asset(comp_el):
+    """pak-relative .cgf path from a (Instanced)MeshComponent blob."""
+    path = ''
+    for k in _walk(comp_el):
+        v = k.get('val')
+        if not v:
+            continue
+        m = re.search(
+            rb'(?:objects|materials|textures|libs|sharedassets|'
+            rb'engineassets)/[a-zA-Z0-9_/\.\-]+\.[Cc][Gg][Ff]', v)
+        if m:
+            return m.group(0).decode('utf8', 'replace')
+        if k.get('crc') == CRC.get('AssetPath') or k.get('crc') == 741691769:
+            path = _str_val(v)
+    return path if path.lower().endswith('.cgf') else ''
+
+
+def _skip_model(path):
+    """Models that must not render: collision proxies, VFX/fog cards,
+    editor primitives used as invisible gameplay blockers."""
+    b = os.path.basename(path).lower()
+    stem, _, _ = b.rpartition('.')
+    p = path.lower()
+    return (b.startswith('primitive_') or stem.endswith('_coll')
+            or stem.endswith('_vfx') or stem.startswith('fx_')
+            or '/vfx/' in p or '/volumetrics/' in p
+            or any(k in stem for k in
+                   ('fogsheet', 'fogbeam', 'fogcard', 'groundfog',
+                    'lightray', 'sunblocker')))
+
+
+def _model_asset(path):
+    """EditorMeshComponent ModelAsset block for a pak-relative .cgf."""
+    stem_path = path[:-4]
+    stem = stem_path.rsplit('/', 1)[-1]
+    guid = _asset_guid(stem_path + '.glb')
+    subid = 0x10000000 | (zlib.crc32(stem.lower().encode()) & 0xffffff)
+    return {'assetId': {'guid': '{%s}' % guid, 'subId': subid},
+            'assetHint': stem_path + '.glb.azmodel'}
+
+
+def _mesh_component(comp_el):
+    """NW MeshComponent -> AZ::Render::EditorMeshComponent.
+
+    The mesh ref sits in a descendant field of the component as
+    {guid(16) subId(4) type-uuid(16) path-string} — extract the
+    .cgf path embedded in its blob.
+
+    The nw_cgf_builder turns <dir>/<stem>.cgf into intermediate
+    <stem>.glb and Scene Builder emits <stem>.glb.azmodel (subId =
+    0x10000000 | crc32(stem) & 0xffffff, verified against
+    assetdb.sqlite product rows)."""
+    path = _mesh_asset(comp_el)
+    if not path:
+        return None
+    return {'$type': 'AZ::Render::EditorMeshComponent', 'Id': nid(),
+            'Controller': {'Configuration': {
+                'ModelAsset': _model_asset(path)}}}
+
+
+def _mat_mul(a, b):
+    """3x4 column-major transform multiply a*b (a outer, b local)."""
+    out = [0.0] * 12
+    for col in range(3):           # basis
+        for row in range(3):
+            out[col*3+row] = (a[row] * b[col*3] + a[3+row] * b[col*3+1]
+                              + a[6+row] * b[col*3+2])
+    for row in range(3):           # translation
+        out[9+row] = (a[row] * b[9] + a[3+row] * b[10]
+                      + a[6+row] * b[11] + a[9+row])
+    return out
+
+
+def _instanced_meshes(comp_el):
+    """NW InstancedMeshComponent -> [(world_tm, ModelAsset)].
+
+    One .cgf + N local-space instance transforms (field 0xc41bd26a);
+    world = entity_world_tm * instance_tm."""
+    path = _mesh_asset(comp_el)
+    if not path:
+        return []
+    transforms = []
+    for k in _walk(comp_el):
+        if k.get('crc') == 0xc41bd26a:
+            for t in _kids(k):
+                v = t.get('val')
+                if v and len(v) == 48:
+                    transforms.append(_f32s(v))
+    return [(t, _model_asset(path)) for t in transforms]
+
+
 def _polyprism_component(comp_el):
     """NW PolygonPrismShapeComponent -> O3DE EditorPolygonPrismShapeComponent.
     NW: PolygonPrism{Height f32be, VertexContainer{Vertices{element 8B=2f32be}}}.
@@ -173,6 +273,48 @@ def convert(raw, level_name='Level'):
                 try:
                     clist.append(_polyprism_component(cel))
                     continue
+                except Exception:
+                    pass
+            if tname == 'MeshComponent':
+                try:
+                    mp = _mesh_asset(cel)
+                    if mp and _skip_model(mp):
+                        continue
+                    mc = _mesh_component(cel)
+                    if mc is not None:
+                        clist.append(mc)
+                        continue
+                except Exception:
+                    pass
+            if tname == 'InstancedMeshComponent':
+                try:
+                    mp = _mesh_asset(cel)
+                    if mp and _skip_model(mp):
+                        continue
+                    insts = _instanced_meshes(cel)
+                    for itm, mdl in insts:
+                        wtm = _mat_mul(tm, itm) if tm else itm
+                        td2 = {'Translate': [wtm[9], wtm[10], wtm[11]]}
+                        rot2 = _euler_deg(wtm)
+                        if rot2:
+                            td2['Rotate'] = rot2
+                        i += 1
+                        ieid = 'Entity_[%d]' % i
+                        ic = [
+                            {'$type': TRANSFORM_COMPONENT, 'Id': nid(),
+                             'Transform Data': td2,
+                             'Parent Entity': 'Entity_[1]'},
+                            {'$type': 'AZ::Render::EditorMeshComponent',
+                             'Id': nid(),
+                             'Controller': {'Configuration': {
+                                 'ModelAsset': mdl}}}]
+                        ents[ieid] = {
+                            'Id': ieid,
+                            'Name': (name or eid) + '_inst',
+                            'Components': {'Component_[%d]' % j: c
+                                           for j, c in enumerate(ic)}}
+                    if insts:
+                        continue
                 except Exception:
                     pass
             unmapped.append(tname)

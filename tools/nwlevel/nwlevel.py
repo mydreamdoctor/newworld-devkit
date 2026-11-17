@@ -127,12 +127,17 @@ def main():
     ap.add_argument('level_dir',
                     help='NW level dir with terrain.json; regions are '
                          'r_* dirs inside it (or inside a regions/ subdir)')
-    ap.add_argument('--slice', required=True,
-                    help='.dynamicslice to merge in')
+    ap.add_argument('--slice', required=True, nargs='+',
+                    help='.dynamicslice file(s) to merge in')
     ap.add_argument('--regions', nargs='*', default=None,
                     help='region dir names to include (default: all)')
     ap.add_argument('--name', required=True, help='level name')
     ap.add_argument('--out', required=True, help='project root')
+    ap.add_argument('--at', nargs=3, type=float, metavar=('X', 'Y', 'Z'),
+                    default=None,
+                    help='world offset for merged slice entities (the '
+                         'position where the world map spawns the '
+                         'composition slice)')
     a = ap.parse_args()
 
     src = a.level_dir.rstrip('/')
@@ -158,7 +163,7 @@ def main():
         hm = decode(open(hm_path, 'rb').read())
         tif = os.path.join(img_dir, rname + '.tif')
         with open(tif, 'wb') as f:
-            f.write(encode(hm, lzw=True))
+            f.write(encode(hm, lzw=True, flip_y=False))
         with open(tif + '.assetinfo', 'w') as f:
             f.write('<ObjectStream version="3">\n'
                     '\t<Class name="TextureSettings" version="1" '
@@ -175,10 +180,25 @@ def main():
     prefab = nw2level.build_prefab(a.name, regions)
     prefab['ContainerEntity']['Name'] = a.name
 
-    slice_raw = open(a.slice, 'rb').read()
-    n, skipped = _merge_slice(prefab, slice_raw)
-    print('slice entities merged: %d (%d comp types unmapped)'
-          % (n, len(skipped)))
+    merged_ids = []
+    for spath in a.slice:
+        slice_raw = open(spath, 'rb').read()
+        n, skipped = _merge_slice(prefab, slice_raw)
+        merged_ids.extend(sorted(prefab['Entities'],
+                                 key=lambda s: int(s[8:-1]))[-n:])
+        print('%s: %d entities merged (%d comp types unmapped)'
+              % (os.path.basename(spath), n, len(skipped)))
+
+    if a.at:
+        eid, pe = nw2level.entity(
+            'SlicePlacement',
+            [nw2level.transform(*a.at, parent='Entity_[1]')])
+        prefab['Entities'][eid] = pe
+        for k in merged_ids:
+            c = prefab['Entities'][k]['Components'].get('Component_[0]', {})
+            c['Parent Entity'] = eid
+        print('placed %d slice entities under %s at %s'
+              % (len(merged_ids), eid, a.at))
 
     cx, cy, cz = _centroid(prefab)
     cam = (cx, cy - 300.0, cz + 220.0)

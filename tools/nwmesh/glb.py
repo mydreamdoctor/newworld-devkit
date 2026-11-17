@@ -6,7 +6,20 @@ Cry is Z-up right-handed; glTF is Y-up. We attach a root node rotated
 them upright.
 """
 import json
+import math
 import struct
+
+
+def _san(o):
+    """Replace non-finite floats — json.dump would emit NaN/Infinity
+    literals, which strict glTF readers (AssImp/rapidjson) reject."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else 0.0
+    if isinstance(o, dict):
+        return {k: _san(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_san(v) for v in o]
+    return o
 
 _CT = {5120: ('b', 1), 5121: ('B', 1), 5122: ('h', 2), 5123: ('H', 2),
        5125: ('I', 4), 5126: ('f', 4)}
@@ -136,7 +149,7 @@ class Gltf:
     def write(self, path):
         g = dict(self.g)
         g['buffers'] = [{'byteLength': len(self.bin)}]
-        js = json.dumps(g, separators=(',', ':')).encode()
+        js = json.dumps(_san(g), separators=(',', ':')).encode()
         js += b' ' * ((-len(js)) % 4)
         bn = bytes(self.bin) + b'\0' * ((-len(self.bin)) % 4)
         total = 12 + 8 + len(js) + 8 + len(bn)

@@ -99,13 +99,60 @@ class Mtl(object):
             return cls.parse(f.read())
 
 
+_global_idx = {}
+
+
+def _scan_root(mesh_path):
+    """Project scan root above a mesh path: the nearest ancestor holding
+    project.json, else the dir itself."""
+    d = os.path.dirname(os.path.abspath(mesh_path))
+    for _ in range(10):
+        if os.path.isfile(os.path.join(d, 'project.json')):
+            return d
+        d = os.path.dirname(d)
+    return os.path.dirname(os.path.abspath(mesh_path))
+
+
+def _global_index(root):
+    """sub-material name -> [(mtl_path, Mtl)] for every .mtl under the
+    project root plus the extracted client material library at
+    <project>/../arena_src/assets (kept outside the project so the AP
+    does not schedule ~28k material source jobs)."""
+    if root in _global_idx:
+        return _global_idx[root]
+    idx = {}
+    roots = [root,
+             os.path.normpath(os.path.join(root, '..', 'arena_src',
+                                           'assets'))]
+    for base in roots:
+        if not os.path.isdir(base):
+            continue
+        for r, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if d not in
+                       ('Cache', 'user', '.git', 'build', 'engineassets')]
+            for fn in files:
+                if not fn.lower().endswith('.mtl'):
+                    continue
+                p = os.path.join(r, fn)
+                try:
+                    m = Mtl.load(p)
+                except Exception:
+                    continue
+                for n in m.by_name:
+                    idx.setdefault(n, []).append((p, m))
+    _global_idx[root] = idx
+    return idx
+
+
 def find_mtl_for_mesh(mesh_path, mat_names):
     """Locate the .mtl that defines a mesh's sub-materials.
 
     mesh_path: path to the .cgf/.skin on disk.
     mat_names: iterable of sub-material names from the mesh's MtlName chunk.
     Returns (mtl_path, Mtl) or (None, None). Scans every .mtl beside the
-    mesh file and picks the one covering the most requested names.
+    mesh file and picks the one covering the most requested names; if no
+    local .mtl covers any name, falls back to a project-wide index (shared
+    library materials like stonekit/generic live away from the meshes).
     """
     want = set(mat_names)
     best, best_hits, best_mtl = None, 0, None
@@ -120,6 +167,13 @@ def find_mtl_for_mesh(mesh_path, mat_names):
         hits = len(want & set(mtl.by_name))
         if hits > best_hits:
             best, best_hits, best_mtl = os.path.join(d, fn), hits, mtl
+    if best_hits == 0:
+        idx = _global_index(_scan_root(mesh_path))
+        for n in want:
+            for p, mtl in idx.get(n, []):
+                hits = len(want & set(mtl.by_name))
+                if hits > best_hits:
+                    best, best_hits, best_mtl = p, hits, mtl
     if best_hits == 0:
         return None, None
     return best, best_mtl

@@ -57,3 +57,28 @@
   exit → set camera → capture. Also: `set_current_view_position` is applied
   to the async level load — set the camera only after the level finishes or
   the level's saved view overwrites it.
+- 🟢 **Run the Editor/GameLauncher in the background on a private headless
+  display, never on the owner's desktop.** Recipe (from the Lockstep
+  overseer's `background-client-tutorial.md`):
+  ```bash
+  RUN=/run/user/$UID/devkit1           # short path, mode 700
+  mkdir -p -m 700 "$RUN"
+  printf '#!/bin/bash\necho "$DISPLAY" >"%s/display"\nexec sleep infinity\n' "$RUN" >"$RUN/holder.sh"
+  chmod 700 "$RUN/holder.sh"
+  env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u DBUS_SESSION_BUS_ADDRESS \
+    XDG_RUNTIME_DIR="$RUN" setsid gamescope --backend headless \
+    -W 1920 -H 1080 -w 1920 -h 1080 --force-windows-fullscreen \
+    -- "$RUN/holder.sh" >"$RUN/gamescope.log" 2>&1 </dev/null &
+  echo $! >"$RUN/gamescope.pid"
+  # wait for $RUN/display to appear, then D=$(cat $RUN/display)
+  env -u WAYLAND_DISPLAY -u XAUTHORITY DISPLAY=$D XDG_RUNTIME_DIR="$RUN" \
+    setsid ./Editor --regset="...project_path..." --skipWelcomeScreenDialog \
+    --runpython /abs/path/script.py >"$RUN/editor.log" 2>&1 </dev/null &
+  echo $! >"$RUN/editor.pid"
+  ```
+  Editor startup scripting: `--runpython file.py` (positional `.py` arg +
+  flag; `--runpythonargs` for args), or `--exec_line "pyRunFile /path"`.
+  Screenshot the private display with `DISPLAY=$D import -window root out.png`;
+  drive input with `DISPLAY=$D xdotool` (XTEST, no `--window` on key/click).
+  A long-lived display at `/run/user/1000/devkit1` (DISPLAY `:2`) may already
+  exist — reuse it. Always kill Editor + gamescope when done.
