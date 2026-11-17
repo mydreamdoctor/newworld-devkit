@@ -102,6 +102,34 @@ def _spline_points(comp):
         (struct.unpack('>H', gran['val'])[0] if gran and 'val' in gran else 8)
 
 
+def _find_crc(el, name):
+    """First descendant field whose crc resolves to `name`."""
+    c = CRC[name]
+    for k in _walk(el):
+        if k.get('crc') == c:
+            return k
+    return None
+
+
+def _polyprism_component(comp_el):
+    """NW PolygonPrismShapeComponent -> O3DE EditorPolygonPrismShapeComponent.
+    NW: PolygonPrism{Height f32be, VertexContainer{Vertices{element 8B=2f32be}}}.
+    O3DE: Configuration.PolygonPrism{Height, VertexContainer.Vertices [[x,y]]}."""
+    hf = _find_crc(comp_el, 'Height')
+    vf = _find_crc(comp_el, 'Vertices')
+    height = struct.unpack('>f', hf['val'])[0] if hf and 'val' in hf else 1.0
+    verts = []
+    if vf is not None:
+        for v in _kids(vf):
+            if 'val' in v and len(v['val']) >= 8:
+                verts.append(list(struct.unpack('>2f', v['val'][:8])))
+    return {'$type': 'EditorPolygonPrismShapeComponent', 'Id': nid(),
+            'Visible': True, 'GameView': True, 'DisplayFilled': False,
+            'Configuration': {'PolygonPrism': {
+                'Height': height,
+                'VertexContainer': {'Vertices': verts}}}}
+
+
 def convert(raw, level_name='Level'):
     ver, root = parse_objectstream(raw)
     ents = {}
@@ -138,6 +166,12 @@ def convert(raw, level_name='Level'):
                 try:
                     pts, closed, gran = _spline_points(cel)
                     clist.append(_spline_component(pts, closed, gran))
+                    continue
+                except Exception:
+                    pass
+            if tname == 'PolygonPrismShapeComponent':
+                try:
+                    clist.append(_polyprism_component(cel))
                     continue
                 except Exception:
                     pass

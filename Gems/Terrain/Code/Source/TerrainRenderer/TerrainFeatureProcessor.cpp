@@ -144,6 +144,13 @@ namespace Terrain
         }
     }
 
+    void TerrainFeatureProcessor::OnPipelineStateLookupRebuilt()
+    {
+        // Draw items may have been skipped while the scene's pipeline
+        // state lookup lacked their draw list tags; rebuild them.
+        m_meshManager.SetRebuildDrawPackets();
+    }
+
     void TerrainFeatureProcessor::AddRenderPasses(AZ::RPI::RenderPipeline* renderPipeline)
     {
         // Get the pass requests to create passes from the asset

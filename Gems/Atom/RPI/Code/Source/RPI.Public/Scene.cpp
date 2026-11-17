@@ -1088,6 +1088,7 @@ namespace AZ
                             // only need to process RasterPass since it and its derived classes need to use draw list tag to 
                             // acquire OutputAttachmentLayout and MultisampleState
                             RasterPass* rasterPass = azrtti_cast<RasterPass*>(child.get());
+                            AZ_Printf("NWDBG", "  tagged child=%s tag=%d raster=%d", child->GetPathName().GetCStr(), (int)child->GetDrawListTag().GetIndex(), rasterPass != nullptr);
                             if (rasterPass == nullptr)
                             {
                                 continue;
@@ -1151,6 +1152,13 @@ namespace AZ
                     }
                 }
             }
+            AZStd::string nwdbgKeys;
+            for (auto& it : m_pipelineStatesLookup)
+            {
+                nwdbgKeys += AZStd::string::format("%d,", (int)it.first.GetIndex());
+            }
+            AZ_Printf("NWDBG", "LookupRebuild scene=%s pipelines=%zu keys=[%s]", m_name.GetCStr(), m_pipelines.size(), nwdbgKeys.c_str());
+
             m_pipelineStatesLookupNeedsRebuild = false;
             SceneNotificationBus::Event(m_id, &SceneNotification::OnPipelineStateLookupRebuilt);
         }

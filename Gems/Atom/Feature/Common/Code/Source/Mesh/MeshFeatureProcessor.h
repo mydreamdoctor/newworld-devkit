@@ -339,6 +339,7 @@ namespace AZ
 
             // RPI::SceneNotificationBus::Handler overrides...
             void OnRenderPipelineChanged(AZ::RPI::RenderPipeline* pipeline, RPI::SceneNotification::RenderPipelineChangeType changeType) override;
+            void OnPipelineStateLookupRebuilt() override;
 
             void CheckForInstancingCVarChange();
             AZStd::vector<AZ::Job*> CreateInitJobQueue();

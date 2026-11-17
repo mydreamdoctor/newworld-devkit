@@ -1590,6 +1590,14 @@ namespace AZ
             m_forceRebuildDrawPackets = true;
         }
 
+        void MeshFeatureProcessor::OnPipelineStateLookupRebuilt()
+        {
+            // Raster draw items may have been dropped while
+            // Scene::HasOutputForPipelineState() returned false for their
+            // draw list tags; rebuild packets against the new lookup.
+            m_forceRebuildDrawPackets = true;
+        }
+
         void MeshFeatureProcessor::UpdateMeshReflectionProbes()
         {
             for (auto& meshInstance : m_modelData)
