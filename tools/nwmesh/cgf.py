@@ -9,7 +9,8 @@ lockstep tools/cgf_physproxy.py + arena_floor_bake.py):
   - mesh chunk 0x1000 ver 0x802: MESH_CHUNK_DESC_0802 — 7 ints, then
     nStreamChunkID[16][8] chunk ids, then 4 physics ids, bbox, etc.
   - streams: either inline ChunkType_DataStream 0x1016 chunks
-    (hdr <6I: flags, streamType, ?, count, elemSize, ? then elements)
+    (hdr <7I: flags, streamType, ?, count, elemSize, ?, reserved
+    then elements)
     or NW-only 0x300b descriptors <5I (kind, heapOfs, size, stride)
     pointing into the sibling .cgfheap blob.
 
@@ -68,8 +69,9 @@ def _stream_desc(d, chunk, heap):
     taken from the mesh header's nStreamChunkID slot, not the descriptor."""
     t, cid, s, o = chunk['type'], chunk['id'], chunk['size'], chunk['off']
     if t == CHUNK_DATASTREAM:
-        fl, stype, _x, ncount, esz, _y = struct.unpack_from('<6I', d, o)
-        return d[o + 24:o + 24 + ncount * esz], ncount, esz, 'inline'
+        fl, stype, _x, ncount, esz, _y, _z = struct.unpack_from('<7I', d, o)
+        hdr = s - ncount * esz  # NW carries a 28B header (7 u32)
+        return d[o + hdr:o + s], ncount, esz, 'inline'
     if t == CHUNK_HEAPSTREAM:
         _k, kind, hoff, hsize, stride = struct.unpack_from('<5I', d, o)
         ncount = hsize // stride if stride else 0
@@ -156,8 +158,13 @@ def decode_stream(stype, data, ncount, esz):
             return [tuple(x / 32767 for x in u('<4h', data, i * 8))
                     for i in range(ncount)]
     if stype == ST_BONEMAP:
-        if esz == 12:  # 4 joints + 4 weights packed (likely 4xu8 ids + 4xu8 w + pad?)
-            return [tuple(u('<4B4B', data, i * 12))
+        if esz == 12:  # SMeshBoneMapping_uint16: 4xu16 joints + 4xu8 weights
+            return [(u('<4H', data, i * 12),
+                     tuple(data[i * 12 + 8:i * 12 + 12]))
+                    for i in range(ncount)]
+        if esz == 8:  # SMeshBoneMapping_uint8: 4xu8 joints + 4xu8 weights
+            return [(tuple(data[i * 8:i * 8 + 4]),
+                     tuple(data[i * 8 + 4:i * 8 + 8]))
                     for i in range(ncount)]
     if stype == ST_VERTMATS:
         if esz == 4:

@@ -6,7 +6,9 @@
             CompiledBones records (controllerId -> name); unresolved
             ids keep numeric node names.
   *.adb  -> <name>.adb.json product: the parsed Mannequin index
-            (categories/fragments/animation refs/procedural clips).
+            (categories/fragments/animation refs/procedural clips),
+            plus an intermediate .animgraph state machine (one
+            AnimGraphMotionNode per Mannequin category).
   *.chr  -> intermediate .glb holding the skeleton node hierarchy
             (bind-pose TRS) for Scene Builder.
 
@@ -22,6 +24,7 @@ import azlmbr.math
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adb as nwadb
+import adb2animgraph
 import caf as nwcaf
 import caf2glb
 
@@ -120,9 +123,16 @@ def on_process_job(args):
         dst = os.path.join(request.tempDirPath, base + '.adb.json')
         with open(dst, 'w') as f:
             json.dump(parsed, f, indent=1)
-        product = azlmbr.asset.builder.JobProduct(dst, null_type, 0)
-        product.outputFlags = azlmbr.asset.builder.JobProduct_IntermediateAsset
-        response.outputProducts = [product]
+        products = [azlmbr.asset.builder.JobProduct(dst, null_type, 0)]
+        try:
+            ag = os.path.join(request.tempDirPath, base + '.animgraph')
+            adb2animgraph.convert(open(src, 'rb').read(), ag)
+            products.append(azlmbr.asset.builder.JobProduct(ag, null_type, 1))
+        except Exception as e:
+            print('adb->animgraph failed on %s: %s' % (src, e))
+        for p in products:
+            p.outputFlags = azlmbr.asset.builder.JobProduct_IntermediateAsset
+        response.outputProducts = products
         response.dependenciesHandled = True
         response.resultCode = azlmbr.asset.builder.ProcessJobResponse_Success
         return response
@@ -171,7 +181,7 @@ def register():
     desc = azlmbr.asset.builder.AssetBuilderDesc()
     desc.name = 'NW Anim Builder'
     desc.busId = BUS_ID
-    desc.version = 2
+    desc.version = 3
     pats = []
     for pat in ('*.caf', '*.adb', '*.chr'):
         p = azlmbr.asset.builder.AssetBuilderPattern()

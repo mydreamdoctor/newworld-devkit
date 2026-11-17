@@ -27,7 +27,7 @@ class Gltf:
         self.g['scenes'][0]['nodes'].append(self.root)
 
     def node(self, name, matrix=None, rotation=None, translation=None,
-             children=None, mesh=None, parent=None):
+             children=None, mesh=None, skin=None, parent=None):
         n = {'name': name}
         if matrix is not None:
             n['matrix'] = matrix
@@ -37,6 +37,8 @@ class Gltf:
             n['translation'] = list(translation)
         if mesh is not None:
             n['mesh'] = mesh
+        if skin is not None:
+            n['skin'] = skin
         if children:
             n['children'] = children
         idx = len(self.g['nodes'])
@@ -105,6 +107,13 @@ class Gltf:
         """primitives: [{'attributes':{}, 'indices':acc, 'material':i}]"""
         self.g['meshes'].append({'primitives': primitives})
         return len(self.g['meshes']) - 1
+
+    def skin(self, joints, ibms):
+        """joints: node indices; ibms: MAT4 column-major flat lists."""
+        acc = self.accessor(5126, 'MAT4', ibms)
+        self.g.setdefault('skins', []).append(
+            {'joints': list(joints), 'inverseBindMatrices': acc})
+        return len(self.g['skins']) - 1
 
     def animation(self, name, channels):
         """channels: [(node_idx, 'rotation'|'translation', times, values)].

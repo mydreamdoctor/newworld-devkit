@@ -6,15 +6,26 @@ Usage: cgf2glb.py IN.cgf|IN.skin OUT.glb
 Emits one glTF mesh per (node, subset) with POSITION/NORMAL/TEXCOORD_0/
 COLOR_0. Missing normals are computed smooth. Node hierarchy and
 transforms come from Node chunks; a root node maps Cry Z-up to glTF
-Y-up. .skin files convert as static (bind-pose) meshes for now.
+Y-up. .skin files with CompiledBones + a bonemap stream convert as
+skinned meshes (skeleton nodes, JOINTS_0/WEIGHTS_0, inverse binds).
 """
 import os
 import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               '..', 'nwanim'))
 import cgf
+import caf
+import caf2glb
 from glb import Gltf
+
+
+def _m34_to_m4(m):
+    """Cry Matrix34 (row-major 3x4 flat) -> glTF MAT4 column-major."""
+    return [m[0], m[4], m[8], 0.0, m[1], m[5], m[9], 0.0,
+            m[2], m[6], m[10], 0.0, m[3], m[7], m[11], 1.0]
 
 
 def _normals(pos, idx):
@@ -55,6 +66,23 @@ def convert(src, dst, texmap=None):
             name,
             base_image=_img(t['baseColor']) if 'baseColor' in t else None,
             normal_image=_img(t['normal']) if 'normal' in t else None))
+    # Skinned path: skeleton from the file's own CompiledBones chunk.
+    bones = None
+    try:
+        bones = caf.parse_bones(c.d)
+    except Exception:
+        pass
+    bone_node, skin_i = {}, None
+    if bones:
+        for i, b in enumerate(bones):
+            t, q = caf2glb.local_trs(b, bones)
+            bone_node[i] = g.node(
+                b['name'], rotation=q, translation=t,
+                parent=g.root if b['parent'] is None
+                else bone_node[b['parent']])
+        ibms = [_m34_to_m4(b['w2b']) for b in bones]
+        skin_i = g.skin([bone_node[i] for i in range(len(bones))], ibms)
+
     nid_to_gltf = {}
     for nodeid, n in c.nodes.items():
         # Cry row-major flat == glTF column-major flat (v' = v*M)
@@ -86,6 +114,11 @@ def convert(src, dst, texmap=None):
         if col and len(col) == len(pos):
             attrs['COLOR_0'] = g.accessor(5121, 'VEC4', col,
                                         normalized=True)
+        bm = st.get(cgf.ST_BONEMAP, (None,))[0]
+        if bm and skin_i is not None and len(bm) == len(pos):
+            attrs['JOINTS_0'] = g.accessor(5123, 'VEC4', [b[0] for b in bm])
+            attrs['WEIGHTS_0'] = g.accessor(
+                5121, 'VEC4', [b[1] for b in bm], normalized=True)
         subs = c.subsets.get(mh['subsets_id'])
         prims = []
         iacc = g.accessor(5125, 'SCALAR', idx, target=34963)
@@ -105,6 +138,8 @@ def convert(src, dst, texmap=None):
         gid = nid_to_gltf.get(next(k for k, v in c.nodes.items()
                                    if v is n))
         g.g['nodes'][gid]['mesh'] = mesh_i
+        if skin_i is not None and 'JOINTS_0' in attrs:
+            g.g['nodes'][gid]['skin'] = skin_i
     g.write(dst)
     return c
 

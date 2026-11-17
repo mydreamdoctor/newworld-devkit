@@ -37,8 +37,15 @@ def _blend(el):
     bl = el.find("Blend")
     if bl is None:
         return {}
-    return {k: float(v) if k != "CurveType" else int(v)
-            for k, v in bl.attrib.items()}
+    def _num(v):
+        try:
+            return int(v)
+        except ValueError:
+            try:
+                return float(v)
+            except ValueError:
+                return v
+    return {k: _num(v) for k, v in bl.attrib.items()}
 
 
 def parse_adb(data):

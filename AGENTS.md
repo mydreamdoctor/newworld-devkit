@@ -11,6 +11,11 @@
 - Repo boundary: change files only inside this repo; writes outside need owner
   permission. Lumberyard/CryEngine sources are leads-only (cite file:line,
   never copy).
+- 🟢 **Standing owner grants** (do not re-ask): the owner has pre-authorized
+  (a) reads+writes+deletes under `/tmp`, (b) launching the local O3DE
+  `Editor`/`AssetProcessor*` binaries from `build/linux/bin`, (c) committing
+  and pushing this repo to `development` after each plan step. These are
+  standing permissions, not one-time approvals.
 - Build/test layout: everything under `build/` (gitignored). Verified recipe and
   stage-1 findings are in the graphiti store and in `NW-STAGE1-FINDINGS.md`.
 - 🔴 **Check free RAM before launching the Editor or AssetProcessor.** This host
