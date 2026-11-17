@@ -98,6 +98,7 @@ def on_process_job(args):
                 json.dump(mat, f, indent=4)
             p = azlmbr.asset.builder.JobProduct(dst, null_type, len(products))
             p.outputFlags = azlmbr.asset.builder.JobProduct_IntermediateAsset
+            p.dependenciesHandled = True
             products.append(p)
             for u in unmapped:
                 print('nw_mat_builder %s/%s: %s' % (stem, name, u))
@@ -120,7 +121,7 @@ def register():
     desc = azlmbr.asset.builder.AssetBuilderDesc()
     desc.name = 'NW MTL Builder'
     desc.busId = BUS_ID
-    desc.version = 1
+    desc.version = 2
     pats = []
     for pat in ('*.mtl',):
         p = azlmbr.asset.builder.AssetBuilderPattern()

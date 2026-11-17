@@ -132,8 +132,8 @@ def on_process_job(args):
             print('adb->animgraph failed on %s: %s' % (src, e))
         for p in products:
             p.outputFlags = azlmbr.asset.builder.JobProduct_IntermediateAsset
+            p.dependenciesHandled = True
         response.outputProducts = products
-        response.dependenciesHandled = True
         response.resultCode = azlmbr.asset.builder.ProcessJobResponse_Success
         return response
 
@@ -164,8 +164,8 @@ def on_process_job(args):
         return response
     product = azlmbr.asset.builder.JobProduct(dst, null_type, 0)
     product.outputFlags = azlmbr.asset.builder.JobProduct_IntermediateAsset
+    product.dependenciesHandled = True
     response.outputProducts = [product]
-    response.dependenciesHandled = True
     response.resultCode = azlmbr.asset.builder.ProcessJobResponse_Success
     return response
 
@@ -181,7 +181,7 @@ def register():
     desc = azlmbr.asset.builder.AssetBuilderDesc()
     desc.name = 'NW Anim Builder'
     desc.busId = BUS_ID
-    desc.version = 3
+    desc.version = 5
     pats = []
     for pat in ('*.caf', '*.adb', '*.chr'):
         p = azlmbr.asset.builder.AssetBuilderPattern()

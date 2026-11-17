@@ -8,6 +8,7 @@ into .azmodel/.actor products.
 The .cgfheap sibling is declared a source dependency so heap changes
 retrigger the job.
 """
+import json
 import os
 import shutil
 import sys
@@ -114,6 +115,28 @@ def on_process_job(args):
         return response
     src = request.fullPath
     base = os.path.splitext(os.path.basename(src))[0]
+
+    # .cgfheap is a companion heap: emit a manifest so it registers as a
+    # processed source (Asset Browser visibility), no scene products.
+    if src.lower().endswith('.cgfheap'):
+        try:
+            import cgf as _cgf
+            chunks = len(_cgf.chunk_table(open(src, 'rb').read()))
+        except Exception:
+            chunks = -1
+        man = os.path.join(request.tempDirPath, base + '.cgfheap.json')
+        with open(man, 'w') as f:
+            json.dump({'cgfheap': os.path.basename(src),
+                       'size': os.path.getsize(src), 'chunks': chunks}, f)
+        null_type = azlmbr.math.Uuid_CreateString(
+            '{00000000-0000-0000-0000-000000000000}')
+        p = azlmbr.asset.builder.JobProduct(man, null_type, 0)
+        p.outputFlags = azlmbr.asset.builder.JobProduct_IntermediateAsset
+        p.dependenciesHandled = True
+        response.outputProducts = [p]
+        response.resultCode = azlmbr.asset.builder.ProcessJobResponse_Success
+        return response
+
     dst = os.path.join(request.tempDirPath, base + '.glb')
 
     # resolve the sibling .mtl into a texture map; copy textures beside
@@ -157,13 +180,14 @@ def on_process_job(args):
     products = []
     product = azlmbr.asset.builder.JobProduct(dst, null_type, 0)
     product.outputFlags = azlmbr.asset.builder.JobProduct_IntermediateAsset
+    product.dependenciesHandled = True
     products.append(product)
     for i, tp in enumerate(tex_products.values()):
         p = azlmbr.asset.builder.JobProduct(tp, null_type, i + 1)
         p.outputFlags = azlmbr.asset.builder.JobProduct_IntermediateAsset
+        p.dependenciesHandled = True
         products.append(p)
     response.outputProducts = products
-    response.dependenciesHandled = True
     response.resultCode = azlmbr.asset.builder.ProcessJobResponse_Success
     return response
 
@@ -179,9 +203,9 @@ def register():
     desc = azlmbr.asset.builder.AssetBuilderDesc()
     desc.name = 'NW CGF Builder'
     desc.busId = BUS_ID
-    desc.version = 4
+    desc.version = 8
     pats = []
-    for pat in ('*.cgf', '*.skin'):
+    for pat in ('*.cgf', '*.cgfheap', '*.skin'):
         p = azlmbr.asset.builder.AssetBuilderPattern()
         p.pattern = pat
         p.type = azlmbr.asset.builder.AssetBuilderPattern_Wildcard
