@@ -237,6 +237,71 @@ def _polyprism_component(comp_el):
 NONUNIFORM_SCALE_COMPONENT = ('{2933FB4F-B3DA-4CD1-8106-F37300730777}'
                               ' EditorNonUniformScaleComponent')
 
+# LightConfiguration (LY v8) field-name CRCs, in serialization order:
+#   LightType, Visible, OnInitially, Color, DiffuseMultiplier,
+#   SpecMultiplier, Ambient, PointMaxDistance, PointAttenuationBulbSize,
+#   AreaWidth, AreaHeight, AreaMaxDistance, AreaFOV, ProjectorDistance,
+#   ProjectorAttenuationBulbSize, ProjectorFOV, ProjectorNearPlane, ...
+_LC = {'type': 0x9884ece8, 'visible': 0x7ab0e859, 'on': 0x6a5d7e6b,
+       'color': 0x665648e9, 'diffuse': 0xab7f306f,
+       'point_dist': 0x4317f26a, 'proj_dist': 0x38237dfa,
+       'proj_fov': 0x6f9bd366}
+LIGHT_CONFIG_TYPE = 'f4cc7bb4-c541-480c-88fc-c5a8f37cc67f'
+
+
+def _light_component(comp_el):
+    """NW LightComponent -> O3DE EditorAreaLightComponent.
+
+    LY LightType: 0=point, 2=projector/spot, 3=environment probe (skipped).
+    O3DE LightType: SimplePoint=6, SimpleSpot=7 (no shape component needed).
+    LY DiffuseMultiplier * 100 -> Atom lumens (per O3DE's own legacy
+    point-light conversion script). Spot cone = ProjectorFOV degrees."""
+    cfg = next((c for c in _kids(comp_el) if c['id'] == LIGHT_CONFIG_TYPE),
+               None)
+    if cfg is None:
+        return None
+    f = {k.get('crc'): k for k in _kids(cfg)}
+
+    def _b(crc, dflt=True):
+        e = f.get(crc)
+        return e['val'][0] != 0 if e and 'val' in e else dflt
+
+    def _f(crc, dflt=0.0):
+        e = f.get(crc)
+        return (struct.unpack('>f', e['val'])[0]
+                if e and 'val' in e and len(e['val']) == 4 else dflt)
+
+    def _u(crc, dflt=0):
+        e = f.get(crc)
+        return (struct.unpack('>I', e['val'])[0]
+                if e and 'val' in e and len(e['val']) == 4 else dflt)
+
+    if not _b(_LC['on']) or not _b(_LC['visible']):
+        return None
+    ltype = _u(_LC['type'])
+    if ltype == 0:
+        o3de_type, radius = 6, max(_f(_LC['point_dist'], 5.0), 0.5)
+        shutters = {}
+    elif ltype == 2:
+        o3de_type = 7
+        radius = max(_f(_LC['proj_dist'], 5.0), 0.5)
+        outer = min(max(_f(_LC['proj_fov'], 90.0), 1.0), 170.0)
+        shutters = {'EnableShutters': True,
+                    'InnerShutterAngleDegrees': round(outer * 0.8, 2),
+                    'OuterShutterAngleDegrees': outer}
+    else:
+        return None
+    ce = f.get(_LC['color'])
+    color = ([round(x, 6) for x in struct.unpack('>4f', ce['val'])]
+             if ce and 'val' in ce and len(ce['val']) == 16
+             else [1.0, 1.0, 1.0, 1.0])
+    conf = {'LightType': o3de_type, 'Color': color,
+            'IntensityMode': 0, 'Intensity': _f(_LC['diffuse'], 1.0) * 100.0,
+            'AttenuationRadiusMode': 0, 'AttenuationRadius': radius}
+    conf.update(shutters)
+    return {'$type': 'AZ::Render::EditorAreaLightComponent', 'Id': nid(),
+            'Controller': {'Configuration': conf}}
+
 
 def _decompose(tm):
     """3x4 column-major -> (translate, rotate_euler, scale3).
@@ -346,6 +411,14 @@ def _emit_slice(raw, ents, skipped, counter, place_tm, resolver, missing,
                 try:
                     clist.append(_polyprism_component(cel))
                     continue
+                except Exception:
+                    pass
+            if tname == 'LightComponent':
+                try:
+                    lc = _light_component(cel)
+                    if lc is not None:
+                        clist.append(lc)
+                        continue
                 except Exception:
                     pass
             if tname == 'MeshComponent':
