@@ -230,6 +230,46 @@ def _polyprism_component(comp_el):
                 'VertexContainer': {'Vertices': verts}}}}
 
 
+NONUNIFORM_SCALE_COMPONENT = ('{2933FB4F-B3DA-4CD1-8106-F37300730777}'
+                              ' EditorNonUniformScaleComponent')
+
+
+def _decompose(tm):
+    """3x4 column-major -> (translate, rotate_euler, scale3).
+
+    NW entity transforms carry baked scale (uniform or per-axis); the
+    basis columns are orthogonal in practice, so column norms give the
+    scale and normalizing them yields a pure rotation matrix."""
+    sx = _m.sqrt(tm[0] ** 2 + tm[1] ** 2 + tm[2] ** 2)
+    sy = _m.sqrt(tm[3] ** 2 + tm[4] ** 2 + tm[5] ** 2)
+    sz = _m.sqrt(tm[6] ** 2 + tm[7] ** 2 + tm[8] ** 2)
+    if sx < 1e-9 or sy < 1e-9 or sz < 1e-9:
+        return [tm[9], tm[10], tm[11]], None, [sx, sy, sz]
+    rot_tm = [tm[0] / sx, tm[1] / sx, tm[2] / sx,
+              tm[3] / sy, tm[4] / sy, tm[5] / sy,
+              tm[6] / sz, tm[7] / sz, tm[8] / sz,
+              0.0, 0.0, 0.0]
+    return [tm[9], tm[10], tm[11]], _euler_deg(rot_tm), [sx, sy, sz]
+
+
+def _transform_comp(tm):
+    """TransformComponent + optional non-uniform-scale component."""
+    tr, rot, sc = _decompose(tm)
+    td = {'Translate': tr}
+    if rot:
+        td['Rotate'] = rot
+    if abs(sc[0] - sc[1]) < 0.001 and abs(sc[1] - sc[2]) < 0.001:
+        if abs(sc[0] - 1.0) > 0.001:
+            td['UniformScale'] = sc[0]
+        return [{'$type': TRANSFORM_COMPONENT, 'Id': nid(),
+                 'Transform Data': td, 'Parent Entity': 'Entity_[1]'}]
+    return [
+        {'$type': TRANSFORM_COMPONENT, 'Id': nid(),
+         'Transform Data': td, 'Parent Entity': 'Entity_[1]'},
+        {'$type': NONUNIFORM_SCALE_COMPONENT, 'Id': nid(),
+         'NonUniformScale': sc}]
+
+
 def _entity_tm(comps):
     """Slice-local world transform (m_worldTM, else TransformComponent)."""
     gt = comps.get('GameTransformComponent')
@@ -284,13 +324,8 @@ def _emit_slice(raw, ents, skipped, counter, place_tm, resolver, missing,
                 missing.add(ref)
         counter[0] += 1
         eid = 'Entity_[%d]' % counter[0]
-        clist = []
-        td = {'Translate': [eff[9], eff[10], eff[11]] if eff else [0, 0, 0]}
-        rot = _euler_deg(eff) if eff else None
-        if rot:
-            td['Rotate'] = rot
-        clist.append({'$type': TRANSFORM_COMPONENT, 'Id': nid(),
-                      'Transform Data': td, 'Parent Entity': 'Entity_[1]'})
+        clist = list(_transform_comp(eff) if eff else _transform_comp(
+            [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]))
         unmapped = []
         for tname, cel in comps.items():
             if tname in ('GameTransformComponent', 'AZ::Component',
@@ -328,16 +363,9 @@ def _emit_slice(raw, ents, skipped, counter, place_tm, resolver, missing,
                     insts = _instanced_meshes(cel)
                     for itm, mdl in insts:
                         wtm = _mat_mul(eff, itm) if eff else itm
-                        td2 = {'Translate': [wtm[9], wtm[10], wtm[11]]}
-                        rot2 = _euler_deg(wtm)
-                        if rot2:
-                            td2['Rotate'] = rot2
                         counter[0] += 1
                         ieid = 'Entity_[%d]' % counter[0]
-                        ic = [
-                            {'$type': TRANSFORM_COMPONENT, 'Id': nid(),
-                             'Transform Data': td2,
-                             'Parent Entity': 'Entity_[1]'},
+                        ic = list(_transform_comp(wtm)) + [
                             {'$type': 'AZ::Render::EditorMeshComponent',
                              'Id': nid(),
                              'Controller': {'Configuration': {
