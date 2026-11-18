@@ -20,13 +20,20 @@ def is_split_stub(data):
 
 
 def mip_parts(path):
-    """Numbered mip files for `path` sorted high-N (mip0) first."""
+    """Numbered mip files for `path` sorted high-N (mip0) first.
+
+    For a `x.dds.a` second texture the parts are `x.dds.1a` .. `x.dds.Na`."""
+    if path.endswith('.a'):
+        stem = path[:-2]
+        pat = lambda n: '%s.%da' % (stem, n)
+    else:
+        pat = lambda n: '%s.%d' % (path, n)
     out = []
     i = 1
-    while os.path.isfile('%s.%d' % (path, i)):
+    while os.path.isfile(pat(i)):
         i += 1
     for n in range(i - 1, 0, -1):
-        out.append('%s.%d' % (path, n))
+        out.append(pat(n))
     return out
 
 
@@ -68,15 +75,19 @@ def reassemble(path):
     want = _payload_size(base)
     if want is not None and len(base) - HDR >= want:
         return base
+    parts = mip_parts(path)
     data = bytearray(base[:HDR])
-    found = False
-    for p in mip_parts(path):
+    for p in parts:
         with open(p, 'rb') as f:
             data += f.read()
-        found = True
     data += base[HDR:]
-    if not found:
+    if not parts:
         return base
+    if want is not None and len(data) - HDR != want:
+        raise ValueError(
+            '%s: incomplete split DDS — header needs %d payload bytes, '
+            '%d parts + stub give %d (a mip part is missing, check the paks)'
+            % (path, want, len(parts), len(data) - HDR))
     return bytes(data)
 
 

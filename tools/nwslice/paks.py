@@ -58,6 +58,29 @@ class Paks:
             raw = f.read(i.compress_size)
         return _decompress(i, raw)
 
+    def split_siblings(self, name):
+        """Every pak member belonging to a (possibly split) texture `name`.
+
+        NW streams big files as `x.dds` + `x.dds.1`..`.N` mip chunks, and
+        some textures ship a second stream `x.dds.a` + `x.dds.1a`..`.Na`.
+        The chunks live scattered across many part-paks, so a pull must
+        gather them from the whole index — same-pak siblings are NOT the
+        complete set. Returns member names present in the index."""
+        base = name.lower()
+        if base.endswith('.a'):
+            stem = base[:-2]
+            want = lambda n: n == base or (
+                n.startswith(stem + '.')
+                and n[len(stem) + 1:-1].isdigit() and n.endswith('a'))
+        else:
+            want = lambda n: n == base or (
+                n.startswith(base + '.')
+                and (n[len(base) + 1:].isdigit()
+                     or n[len(base) + 1:] == 'a'
+                     or (n[len(base) + 1:-1].isdigit()
+                         and n.endswith('a'))))
+        return sorted(n for n in self.idx if want(n))
+
 
 def _extract(pak_path, outdir, patterns):
     made = 0

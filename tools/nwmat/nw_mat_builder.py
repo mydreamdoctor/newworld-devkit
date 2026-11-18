@@ -92,12 +92,10 @@ def on_process_job(args):
                     tex_rel[mp] = rel
             mat, unmapped = mtl2atom.to_atom(sub, tex_rel)
             stem = os.path.splitext(os.path.basename(request.fullPath))[0]
-            # Multi-sub mtls share sub-material names across sibling mtls
-            # (e.g. legion_arch_01_d_mat emits legion_arch_01_c.material);
-            # prefix the mtl stem so product paths stay unique per source.
-            name = sub.name or stem
-            if len(m.subs) > 1:
-                name = stem + '__' + name
+            # Sub-material names collide across mtls in the same dir even for
+            # single-sub mtls (rockspike_*_mat_01 all emit rock_shards), so the
+            # mtl stem always prefixes the product name.
+            name = stem + '__' + (sub.name or stem)
             dst = os.path.join(request.tempDirPath, name + '.material')
             with open(dst, 'w') as f:
                 json.dump(mat, f, indent=4)
@@ -126,7 +124,7 @@ def register():
     desc = azlmbr.asset.builder.AssetBuilderDesc()
     desc.name = 'NW MTL Builder'
     desc.busId = BUS_ID
-    desc.version = 2
+    desc.version = 3
     pats = []
     for pat in ('*.mtl',):
         p = azlmbr.asset.builder.AssetBuilderPattern()

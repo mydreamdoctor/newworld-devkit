@@ -39,20 +39,20 @@ def _dds_stub(tmp, name, w=64, h=64, mips=7, dxgi=72):
     struct.pack_into('<I', hdr, 84, 0x4)
     hdr[84:88] = b'DX10'
     struct.pack_into('<I', hdr, 128, dxgi)
-    tail = bytes(16)  # pretend trailing mip data
-    path = os.path.join(tmp, name)
-    with open(path, 'wb') as f:
-        f.write(bytes(hdr) + tail)
     payload = []
     # BC1 (8b/block) sizes for 64x64: mips 0..6
     sizes = [max(1, (w >> i) // 4) * max(1, (h >> i) // 4) * 8
              for i in range(mips)]
+    tail = bytes(sizes[-1])  # the stub carries the smallest mip
+    path = os.path.join(tmp, name)
+    with open(path, 'wb') as f:
+        f.write(bytes(hdr) + tail)
     # numbered files cover mips 0..mips-2, tail holds the last
     for i, s in enumerate(sizes[:-1]):
         n = len(sizes) - 1 - i
         with open('%s.%d' % (path, n), 'wb') as f:
             f.write(bytes([i]) * s)
-    return path, sum(sizes[:-1]) + 16 + 148
+    return path, sum(sizes) + 148
 
 
 class TestMtl(unittest.TestCase):
