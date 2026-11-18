@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "o3de": {
+      "command": "o3de-mcp",
+      "env": {
+        "O3DE_ENGINE_PATH": "/home/lachlan/development/newworld-devkit"
+      }
+    }
+  }
+}
