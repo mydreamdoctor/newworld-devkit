@@ -39,20 +39,24 @@ def _str_val(e):
 
 
 def _euler_deg(tm):
-    """Column-major 3x4 basis columns -> ZYX euler degrees (yaw,pitch,roll).
+    """Column-major 3x4 basis columns -> AZ deprecated-XYZ euler degrees.
 
-    AZ::Transform Rotate is a ZYX euler in degrees: R = Rz*Ry*Rx.
+    The TransformComponent "Rotate" field is consumed by
+    ConvertEulerDegreesToQuaternion == SetFromEulerRadians (deprecated
+    XYZ), whose matrix is R = Rx*Ry*Rz (Matrix3x4::SetFromEulerRadians):
+    R02=sy, R12=-sx*cy, R22=cx*cy, R01=-cy*sz, R00=cy*cz.
+    Element R[r][c] is tm[c*3+r].
     """
     bx, by, bz = tm[0:3], tm[3:6], tm[6:9]
-    # R columns are bx,by,bz
-    r20, r21, r22 = bx[2], by[2], bz[2]
-    if abs(r20) < 0.999999:
-        ry = _m.degrees(_m.asin(-r20))
-        rz = _m.degrees(_m.atan2(by[0], bx[0]))
-        rx = _m.degrees(_m.atan2(r21, r22))
+    sy = max(-1.0, min(1.0, bz[0]))          # R02
+    if abs(sy) < 0.999999:
+        ry = _m.degrees(_m.asin(sy))
+        rx = _m.degrees(_m.atan2(-bz[1], bz[2]))   # -R12, R22
+        rz = _m.degrees(_m.atan2(-by[0], bx[0]))   # -R01, R00
     else:
-        ry = 90.0 if r20 <= -0.999999 else -90.0
-        rz = _m.degrees(_m.atan2(-by[1], by[0] if False else by[1]))
+        # gimbal: cy==0, only (rx+/-rz) observable; keep rx=0
+        ry = 90.0 if sy > 0 else -90.0
+        rz = _m.degrees(_m.atan2(bx[1] if sy > 0 else -bx[1], by[1]))
         rx = 0.0
     if abs(rx) < 1e-6 and abs(ry) < 1e-6 and abs(rz) < 1e-6:
         return None
