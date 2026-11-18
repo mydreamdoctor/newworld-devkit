@@ -224,6 +224,45 @@ def build_surfaces(level, src, out, rname):
     return gradients, materials, macros
 
 
+def collect_cookies(region_dir):
+    """Gather capital 'cookie' terrain stamps from every *.capitals.json
+    beside region.heightmap. Returns a list of stamp dicts ready for
+    serialization into a CapitalCookieGradientComponent config — the gem
+    applies them at gradient-sample time, so the TIFF stays raw (the
+    client also keeps its heightmap unflattened and stamps at load)."""
+    cookies = []
+    for fn in sorted(glob.glob(os.path.join(region_dir,
+                                          '*.capitals.json'))):
+        try:
+            caps = json.load(open(fn))
+        except Exception:
+            continue
+        for c in caps.get('Capitals', []):
+            ck = c.get('cookie')
+            if not ck:
+                continue
+            wp = c.get('worldPosition') or {}
+            outer = float(ck.get('outerRadius', 0.0))
+            if outer <= 0:
+                continue
+            cookies.append({
+                'Position': [float(wp.get('x', 0)), float(wp.get('y', 0)),
+                             float(wp.get('z', 0))],
+                'InnerRadius': float(ck.get('innerRadius', 0.0)),
+                'OuterRadius': outer,
+                'MaxHeightBlend': float(ck.get('maxHeightBlend', 1.0)),
+                'EdgeNoise': float(ck.get('edgeNoise', 0.0)),
+                'EdgeNoiseFeatureSize': float(
+                    ck.get('edgeNoiseFeatureSize', 0.0)),
+                'GroundNoiseScale': float(ck.get('groundNoiseScale', 0.0)),
+            })
+            print('  cookie %s: flatten to %.1fm r %.0f-%.0f at (%.1f,%.1f)'
+                  % (os.path.basename(fn), float(wp.get('z', 0)),
+                     float(ck.get('innerRadius', 0.0)), outer,
+                     float(wp.get('x', 0)), float(wp.get('y', 0))))
+    return cookies
+
+
 def apply_cookies(hm, region_dir, mountain_height):
     """Apply capital 'cookie' terrain flattens to a decoded Heightmap.
 
@@ -289,11 +328,19 @@ def apply_cookies(hm, region_dir, mountain_height):
     return applied
 
 
-def build_prefab(level, regions, surfaces=None):
+NW_CAPITAL_STAMP_TYPE = \
+    '{5D1A8E3B-4F6C-4A9D-8E2B-7C3F5A1D6E04} EditorCapitalCookieGradientComponent'
+
+
+def build_prefab(level, regions, surfaces=None, cookies=None):
     """regions: [(name,(ix,iy),size,mountainHeight,img_hint)]
     surfaces: {region_name: (gradients, materials, macros)} from
-    build_surfaces — detail-material/splat/macro bindings."""
+    build_surfaces — detail-material/splat/macro bindings.
+    cookies: {region_name: [cookie dicts]} from collect_cookies — emitted as
+    an NWCapital stamp entity between the ImageGradient and the terrain
+    height list so the TIFF stays raw and the gem stamps at sample time."""
     surfaces = surfaces or {}
+    cookies = cookies or {}
     ents = {}
     for name, (ix, iy), size, mh, hint in regions:
         cx, cy = ix * size + size / 2.0, iy * size + size / 2.0
@@ -318,10 +365,23 @@ def build_prefab(level, regions, surfaces=None):
              'Previewer': {'BoundsEntity': ''},
              'Configuration': {'StreamingImageAsset': _img(hint)}},
         ])
+        height_grad = geid
+        if cookies.get(name):
+            # capital cookie stamps: image gradient -> stamp -> terrain list
+            steid, ste = entity('CapitalStamps_' + name, [
+                transform(0.0, 0.0, 0.0, parent=seid),
+                comp(NW_CAPITAL_STAMP_TYPE, {
+                    'Gradient': {'GradientId': geid},
+                    'Cookies': cookies[name],
+                    'HeightMin': 0.0,
+                    'HeightMax': mh}),
+            ])
+            ents[steid] = ste
+            height_grad = steid
         # backpatch the gradient entity ref
         for c in se['Components'].values():
             if c['$type'] == 'EditorTerrainHeightGradientListComponent':
-                c['Configuration']['GradientEntities'] = [geid]
+                c['Configuration']['GradientEntities'] = [height_grad]
         ents[seid] = se
         ents[geid] = ge
         gradients, materials, macros = surfaces.get(name, ([], [], None))
@@ -379,6 +439,10 @@ def main():
     ap.add_argument('level_dir', help='NW level dir containing terrain.json + regions/')
     ap.add_argument('out', help='output project root')
     ap.add_argument('--name', help='level name (default: dir name)')
+    ap.add_argument('--bake-cookies', action='store_true',
+                    help='bake capital cookie flattens into the TIFF '
+                         '(legacy path — default is raw TIFF + NWCapital '
+                         'gem stamps at sample time)')
     a = ap.parse_args()
     src = a.level_dir.rstrip('/')
     level = a.name or os.path.basename(src)
@@ -388,6 +452,7 @@ def main():
     img_dir = os.path.join(lvl_dir, 'heightmaps')
     os.makedirs(img_dir, exist_ok=True)
     regions = []
+    all_cookies = {}
     rdir = os.path.join(src, 'regions')
     if not os.path.isdir(rdir):
         rdir = src  # region dirs may sit directly under the level dir
@@ -399,7 +464,11 @@ def main():
             continue
         ix, iy = region_index(rname)
         hm = decode(open(hm_path, 'rb').read())
-        apply_cookies(hm, os.path.dirname(hm_path), mh)
+        if a.bake_cookies:
+            apply_cookies(hm, os.path.dirname(hm_path), mh)
+        else:
+            all_cookies[rname] = collect_cookies(
+                os.path.dirname(hm_path))
         # NOTE: no row flip. O3DE's image-gradient pipeline already maps
         # uv.y the opposite way to world y, matching NW's row-0-is-high-y.
         tif = os.path.join(img_dir, rname + '.tif')
@@ -427,7 +496,7 @@ def main():
         for rname, (ix, iy), _size, _mh, _hint in regions:
             if (ix, iy) == tile:
                 surfaces[rname] = build_surfaces(level, src, a.out, rname)
-    prefab = build_prefab(level, regions, surfaces)
+    prefab = build_prefab(level, regions, surfaces, all_cookies)
     ppath = os.path.join(lvl_dir, level + '.prefab')
     with open(ppath, 'w') as f:
         json.dump(prefab, f, indent=1)

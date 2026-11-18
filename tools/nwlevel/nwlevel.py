@@ -146,6 +146,10 @@ def main():
                          'into the level prefab; the level stays small and '
                          'the chunks are instantiated progressively by the '
                          'auto-open script (keeps the editor responsive)')
+    ap.add_argument('--bake-cookies', action='store_true',
+                    help='bake capital cookie flattens into the TIFF '
+                         '(legacy — default is raw TIFF + NWCapital gem '
+                         'stamps at sample time)')
     a = ap.parse_args()
 
     src = a.level_dir.rstrip('/')
@@ -159,6 +163,7 @@ def main():
     if not os.path.isdir(rdir):
         rdir = src
     regions = []
+    all_cookies = {}
     for rname in sorted(os.listdir(rdir)):
         if not rname.startswith('r_'):
             continue
@@ -169,7 +174,11 @@ def main():
             continue
         ix, iy = nw2level.region_index(rname)
         hm = decode(open(hm_path, 'rb').read())
-        nw2level.apply_cookies(hm, os.path.dirname(hm_path), mh)
+        if a.bake_cookies:
+            nw2level.apply_cookies(hm, os.path.dirname(hm_path), mh)
+        else:
+            all_cookies[rname] = nw2level.collect_cookies(
+                os.path.dirname(hm_path))
         tif = os.path.join(img_dir, rname + '.tif')
         with open(tif, 'wb') as f:
             f.write(encode(hm, lzw=True, flip_y=False))
@@ -196,7 +205,7 @@ def main():
             if (ix, iy) == tile:
                 surfaces[rname] = nw2level.build_surfaces(
                     a.name, src, a.out, rname)
-    prefab = nw2level.build_prefab(a.name, regions, surfaces)
+    prefab = nw2level.build_prefab(a.name, regions, surfaces, all_cookies)
     prefab['ContainerEntity']['Name'] = a.name
 
     merged_ids = []

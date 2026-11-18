@@ -1,0 +1,23 @@
+{
+    "gem_name": "NWCapital",
+    "version": "0.0.0",
+    "display_name": "New World Capital Terrain Stamps",
+    "license": "Apache-2.0 Or MIT",
+    "license_url": "https://github.com/o3de/o3de/blob/development/LICENSE.txt",
+    "origin": "New World devkit",
+    "origin_url": "https://github.com/mydreamdoctor/newworld-devkit",
+    "type": "Code",
+    "summary": "Applies New World capital 'cookie' terrain stamps (flatten + smoothstep blend ring) as a gradient over a source heightmap gradient, matching the client's runtime terrain deformation.",
+    "canonical_tags": [
+        "Gem"
+    ],
+    "user_tags": [
+        "NewWorld",
+        "Terrain"
+    ],
+    "requirements": "",
+    "dependencies": [
+        "GradientSignal",
+        "LmbrCentral"
+    ]
+}
