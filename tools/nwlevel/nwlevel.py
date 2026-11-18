@@ -85,7 +85,7 @@ def _aux_ents(prefab, camera_pos, camera_rot):
         ('sun', (-55.0, 0.0, 25.0),
          [nw2level.comp('AZ::Render::EditorDirectionalLightComponent',
                         Controller={'Configuration': {
-                            'Intensity': 1.0,
+                            'Intensity': 4.0,
                             'CameraEntityId': '',
                             'ShadowFilterMethod': 1}})]),
         ('sky', None,
@@ -93,6 +93,7 @@ def _aux_ents(prefab, camera_pos, camera_rot):
                         Controller={'Configuration': {}}),
           nw2level.comp('AZ::Render::EditorImageBasedLightComponent',
                         Controller={'Configuration': {
+                            'exposure': 2.0,
                             'diffuseImageAsset': {
                                 'assetId': {'guid': ibl_guid, 'subId': 3000},
                                 'assetHint': 'lightingpresets/highcontrast/'

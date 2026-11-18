@@ -61,7 +61,8 @@ class Gltf:
         return idx
 
     def material(self, name, base_image=None, normal_image=None,
-                 base_color=None):
+                 base_color=None, alpha_mode=None, alpha_cutoff=None,
+                 double_sided=False):
         """base_image/normal_image: image indexes. base_color: rgba."""
         pbr = {}
         if base_image is not None:
@@ -71,6 +72,12 @@ class Gltf:
         m = {'name': name, 'pbrMetallicRoughness': pbr}
         if normal_image is not None:
             m['normalTexture'] = {'index': normal_image}
+        if alpha_mode:
+            m['alphaMode'] = alpha_mode
+        if alpha_cutoff is not None:
+            m['alphaCutoff'] = alpha_cutoff
+        if double_sided:
+            m['doubleSided'] = True
         self.g['materials'].append(m)
         return len(self.g['materials']) - 1
 

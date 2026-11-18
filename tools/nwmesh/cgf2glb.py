@@ -62,10 +62,20 @@ def convert(src, dst, texmap=None):
     for s in (c.mtl_subs or [c.mtl or os.path.basename(src)]):
         name = s if isinstance(s, str) else 'mat%d' % len(mat_ids)
         t = texmap.get(name, {})
+        alpha_mode, alpha_cutoff, double_sided = None, None, False
+        if t.get('alpha_test', 0) > 0:
+            alpha_mode, alpha_cutoff = 'MASK', float(t['alpha_test'])
+        elif 0 < t.get('opacity', 1.0) < 1.0:
+            alpha_mode = 'BLEND'
+        if alpha_mode:
+            # vegetation/leaf cards are single-sided sheets viewed both ways
+            double_sided = True
         mat_ids.append(g.material(
             name,
             base_image=_img(t['baseColor']) if 'baseColor' in t else None,
-            normal_image=_img(t['normal']) if 'normal' in t else None))
+            normal_image=_img(t['normal']) if 'normal' in t else None,
+            alpha_mode=alpha_mode, alpha_cutoff=alpha_cutoff,
+            double_sided=double_sided))
     # Skinned path: skeleton from the file's own CompiledBones chunk.
     bones = None
     try:

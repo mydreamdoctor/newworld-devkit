@@ -71,7 +71,7 @@ def _mesh_materials(mesh_path):
                or (m.subs[i] if i < len(m.subs) else None))
         if not sub or name in out:
             continue
-        tex = {}
+        tex = {'alpha_test': sub.alpha_test, 'opacity': sub.opacity}
         for mp, ref in sub.textures.items():
             p = nwmtl.resolve_texture(ref, mesh_dir)
             if p:
@@ -172,7 +172,7 @@ def on_process_job(args):
               % (base, _mp, ', '.join(
                   '%r:%d' % (k, len(v)) for k, v in mats.items())))
         for sub_name, tex in mats.items():
-            t = {}
+            t = {k: tex[k] for k in ('alpha_test', 'opacity') if k in tex}
             for mp, p in tex.items():
                 if mp not in ('Diffuse', 'Bumpmap'):
                     continue
