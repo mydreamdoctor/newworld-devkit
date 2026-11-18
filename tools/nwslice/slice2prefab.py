@@ -230,29 +230,63 @@ def _polyprism_component(comp_el):
                 'VertexContainer': {'Vertices': verts}}}}
 
 
-def convert(raw, level_name='Level'):
+def _entity_tm(comps):
+    """Slice-local world transform (m_worldTM, else TransformComponent)."""
+    gt = comps.get('GameTransformComponent')
+    if gt is not None:
+        f = _by_crc(gt, 'm_worldTM')
+        if f is not None and 'val' in f:
+            return _f32s(f['val'])
+    tc = comps.get('TransformComponent')
+    if tc is not None:
+        f = _by_crc(tc, 'Transform')
+        if f is not None and 'val' in f and len(f['val']) == 48:
+            return _f32s(f['val'])
+    return None
+
+
+def _slice_asset_path(comp_el):
+    """pak-relative .dynamicslice path inside a PrefabSpawnerComponent."""
+    for k in _walk(comp_el):
+        v = k.get('val')
+        if not v:
+            continue
+        m = re.search(rb'slices/[\w./\\-]+\.dynamicslice', v, re.I)
+        if m:
+            return m.group(0).decode('utf8', 'replace')
+    return ''
+
+
+def _emit_slice(raw, ents, skipped, counter, place_tm, resolver, missing,
+                depth):
+    """Append one slice's entities to `ents`, expanding nested-slice
+    spawners through `resolver`.
+
+    The client places a spawned slice's contents at the
+    PrefabSpawnerComponent entity's transform, so each expansion
+    premultiplies by that transform (`place_tm`, 3x4 column-major)."""
+    if depth > 8:
+        return
     ver, root = parse_objectstream(raw)
-    ents = {}
-    skipped = {}
-    i = 1
     for name, comps in _entities(root):
-        i += 1
-        eid = 'Entity_[%d]' % i
+        tm = _entity_tm(comps)
+        eff = (_mat_mul(place_tm, tm) if place_tm and tm
+               else (place_tm or tm))
+        sp = comps.get('PrefabSpawnerComponent')
+        if sp is not None and resolver is not None:
+            ref = _slice_asset_path(sp)
+            if ref:
+                child = resolver(ref)
+                if child is not None:
+                    _emit_slice(child, ents, skipped, counter, eff,
+                                resolver, missing, depth + 1)
+                    continue
+                missing.add(ref)
+        counter[0] += 1
+        eid = 'Entity_[%d]' % counter[0]
         clist = []
-        tm = None
-        gt = comps.get('GameTransformComponent')
-        if gt is not None:
-            f = _by_crc(gt, 'm_worldTM')
-            if f is not None and 'val' in f:
-                tm = _f32s(f['val'])
-        if tm is None:
-            tc = comps.get('TransformComponent')
-            if tc is not None:
-                f = _by_crc(tc, 'Transform')
-                if f is not None and 'val' in f and len(f['val']) == 48:
-                    tm = _f32s(f['val'])
-        td = {'Translate': [tm[9], tm[10], tm[11]] if tm else [0, 0, 0]}
-        rot = _euler_deg(tm) if tm else None
+        td = {'Translate': [eff[9], eff[10], eff[11]] if eff else [0, 0, 0]}
+        rot = _euler_deg(eff) if eff else None
         if rot:
             td['Rotate'] = rot
         clist.append({'$type': TRANSFORM_COMPONENT, 'Id': nid(),
@@ -260,7 +294,7 @@ def convert(raw, level_name='Level'):
         unmapped = []
         for tname, cel in comps.items():
             if tname in ('GameTransformComponent', 'AZ::Component',
-                         'TransformComponent'):
+                         'TransformComponent', 'PrefabSpawnerComponent'):
                 continue
             if tname == 'SplineComponent':
                 try:
@@ -293,13 +327,13 @@ def convert(raw, level_name='Level'):
                         continue
                     insts = _instanced_meshes(cel)
                     for itm, mdl in insts:
-                        wtm = _mat_mul(tm, itm) if tm else itm
+                        wtm = _mat_mul(eff, itm) if eff else itm
                         td2 = {'Translate': [wtm[9], wtm[10], wtm[11]]}
                         rot2 = _euler_deg(wtm)
                         if rot2:
                             td2['Rotate'] = rot2
-                        i += 1
-                        ieid = 'Entity_[%d]' % i
+                        counter[0] += 1
+                        ieid = 'Entity_[%d]' % counter[0]
                         ic = [
                             {'$type': TRANSFORM_COMPONENT, 'Id': nid(),
                              'Transform Data': td2,
@@ -323,6 +357,14 @@ def convert(raw, level_name='Level'):
         ents[eid] = {
             'Id': eid, 'Name': name or eid,
             'Components': {'Component_[%d]' % j: c for j, c in enumerate(clist)}}
+
+
+def convert(raw, level_name='Level', resolver=None, place_tm=None,
+            missing=None):
+    ents = {}
+    skipped = {}
+    _emit_slice(raw, ents, skipped, [1], place_tm, resolver,
+                missing if missing is not None else set(), 0)
     prefab = {
         'ContainerEntity': {
             'Id': 'Entity_[1]', 'Name': level_name,

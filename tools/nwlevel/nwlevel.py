@@ -43,10 +43,25 @@ def _max_eid(prefab):
     return hi
 
 
-def _merge_slice(prefab, slice_raw):
+def _slice_resolver(dirs):
+    """PrefabSpawnerComponent ref -> slice bytes, indexed by basename."""
+    idx = {}
+    for d in dirs:
+        for p in glob.glob(os.path.join(d, '**', '*.dynamicslice'),
+                           recursive=True):
+            idx[os.path.basename(p).lower()] = p
+
+    def resolve(ref):
+        p = idx.get(os.path.basename(ref.replace('\\', '/')).lower())
+        return open(p, 'rb').read() if p else None
+    return resolve
+
+
+def _merge_slice(prefab, slice_raw, resolver=None, missing=None):
     """Append a slice's entities to a level prefab, renumbering ids."""
     spf, skipped = slice2prefab.convert(
-        slice_raw, prefab['ContainerEntity']['Name'])
+        slice_raw, prefab['ContainerEntity']['Name'],
+        resolver=resolver, missing=missing)
     base = _max_eid(prefab)
     remap = {}
     for k in sorted(spf['Entities'], key=lambda s: int(s[8:-1])):
@@ -131,6 +146,10 @@ def main():
                          'r_* dirs inside it (or inside a regions/ subdir)')
     ap.add_argument('--slice', required=True, nargs='+',
                     help='.dynamicslice file(s) to merge in')
+    ap.add_argument('--slicedir', nargs='*', default=[],
+                    help='dirs indexed for nested-slice spawner '
+                         'resolution (PrefabSpawnerComponent m_sliceAsset '
+                         'refs resolve by basename)')
     ap.add_argument('--regions', nargs='*', default=None,
                     help='region dir names to include (default: all)')
     ap.add_argument('--name', required=True, help='level name')
@@ -208,14 +227,21 @@ def main():
     prefab = nw2level.build_prefab(a.name, regions, surfaces, all_cookies)
     prefab['ContainerEntity']['Name'] = a.name
 
+    resolver = _slice_resolver(a.slicedir) if a.slicedir else None
+    missing = set()
     merged_ids = []
     for spath in a.slice:
         slice_raw = open(spath, 'rb').read()
-        n, skipped = _merge_slice(prefab, slice_raw)
+        n, skipped = _merge_slice(prefab, slice_raw,
+                                  resolver=resolver, missing=missing)
         merged_ids.extend(sorted(prefab['Entities'],
                                  key=lambda s: int(s[8:-1]))[-n:])
         print('%s: %d entities merged (%d comp types unmapped)'
               % (os.path.basename(spath), n, len(skipped)))
+    if missing:
+        print('unresolved nested-slice refs:')
+        for m in sorted(missing):
+            print('   ', m)
 
     if a.at:
         nw2level._next_id[0] = _max_eid(prefab)  # merge remap bypassed nid()
