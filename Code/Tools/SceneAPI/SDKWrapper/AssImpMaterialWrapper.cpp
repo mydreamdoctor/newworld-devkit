@@ -8,6 +8,7 @@
 
 #include <assimp/scene.h>
 #include <assimp/material.h>
+#include <assimp/GltfMaterial.h>
 #include <AzCore/Debug/Trace.h>
 #include <AzCore/Math/Sha1.h>
 #include <AzCore/Debug/Trace.h>
@@ -194,6 +195,29 @@ namespace AZ
                 return useMap != 0.0f;
             }
             return AZStd::nullopt;
+        }
+
+        AZStd::optional<float> AssImpMaterialWrapper::GetAlphaCutoff() const
+        {
+            aiString alphaMode;
+            if (m_assImpMaterial->Get(AI_MATKEY_GLTF_ALPHAMODE, alphaMode) != aiReturn::aiReturn_FAILURE &&
+                alphaMode == aiString("MASK"))
+            {
+                float alphaCutoff = 0.5f;
+                m_assImpMaterial->Get(AI_MATKEY_GLTF_ALPHACUTOFF, alphaCutoff);
+                return alphaCutoff;
+            }
+            return AZStd::nullopt;
+        }
+
+        bool AssImpMaterialWrapper::IsDoubleSided() const
+        {
+            int twoSided = 0;
+            if (m_assImpMaterial->Get(AI_MATKEY_TWOSIDED, twoSided) != aiReturn::aiReturn_FAILURE)
+            {
+                return twoSided != 0;
+            }
+            return false;
         }
 
         AZStd::string AssImpMaterialWrapper::GetTextureFileName(MaterialMapType textureType) const

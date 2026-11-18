@@ -226,6 +226,26 @@ namespace AZ
                 return m_useAOMap;
             }
 
+            void MaterialData::SetAlphaCutoff(AZStd::optional<float> alphaCutoff)
+            {
+                m_alphaCutoff = alphaCutoff;
+            }
+
+            AZStd::optional<float> MaterialData::GetAlphaCutoff() const
+            {
+                return m_alphaCutoff;
+            }
+
+            void MaterialData::SetDoubleSided(bool doubleSided)
+            {
+                m_doubleSided = doubleSided;
+            }
+
+            bool MaterialData::IsDoubleSided() const
+            {
+                return m_doubleSided;
+            }
+
             uint64_t MaterialData::GetUniqueId() const
             {
                 return m_uniqueId;
@@ -249,7 +269,7 @@ namespace AZ
                 SerializeContext* serializeContext = azrtti_cast<SerializeContext*>(context);
                 if (serializeContext)
                 {
-                    serializeContext->Class<MaterialData>()->Version(4)
+                    serializeContext->Class<MaterialData>()->Version(5)
                         ->Field("textureMap", &MaterialData::m_textureMap)
                         ->Field("diffuseColor", &MaterialData::m_diffuseColor)
                         ->Field("specularColor", &MaterialData::m_specularColor)
@@ -266,7 +286,9 @@ namespace AZ
                         ->Field("roughnessFactor", &MaterialData::m_roughnessFactor)
                         ->Field("useEmissiveMap", &MaterialData::m_useEmissiveMap)
                         ->Field("emissiveIntensity", &MaterialData::m_emissiveIntensity)
-                        ->Field("useAOMap", &MaterialData::m_useAOMap);
+                        ->Field("useAOMap", &MaterialData::m_useAOMap)
+                        ->Field("alphaCutoff", &MaterialData::m_alphaCutoff)
+                        ->Field("doubleSided", &MaterialData::m_doubleSided);
 
                     EditContext* editContext = serializeContext->GetEditContext();
                     if (editContext)

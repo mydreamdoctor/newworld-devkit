@@ -93,6 +93,11 @@ namespace AZ
                 virtual AZStd::optional<bool> GetUseAOMap() const = 0;
                                 
                 virtual uint64_t GetUniqueId() const = 0;
+
+                //! Alpha test cutoff, if the source material uses alpha masking (e.g. glTF alphaMode "MASK").
+                virtual AZStd::optional<float> GetAlphaCutoff() const { return AZStd::nullopt; }
+                //! True if the source material is double sided.
+                virtual bool IsDoubleSided() const { return false; }
             };
         }  //namespace DataTypes
     }  //namespace SceneAPI

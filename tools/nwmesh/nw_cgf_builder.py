@@ -166,6 +166,7 @@ def on_process_job(args):
     # intermediate products so ImageBuilder makes streamingimages.
     texmap = {}
     tex_products = {}
+    need_alpha = set()
     try:
         _mp, mats = _mesh_materials(src)
         print('nw_cgf_builder %s: mtl=%s mats={%s}'
@@ -173,12 +174,16 @@ def on_process_job(args):
                   '%r:%d' % (k, len(v)) for k, v in mats.items())))
         for sub_name, tex in mats.items():
             t = {k: tex[k] for k in ('alpha_test', 'opacity') if k in tex}
+            sub_alpha = tex.get('alpha_test', 0) > 0 \
+                or 0 < tex.get('opacity', 1.0) < 1.0
             for mp, p in tex.items():
                 if mp not in ('Diffuse', 'Bumpmap'):
                     continue
                 # prefix with the mesh stem: intermediate products land
                 # beside the .glb and must not collide across jobs.
                 fname = '%s__%s' % (base, os.path.basename(p))
+                if sub_alpha and mp == 'Diffuse':
+                    need_alpha.add(fname)
                 if fname in tex_products:
                     t['baseColor' if mp == 'Diffuse' else 'normal'] = fname
                     continue
@@ -220,6 +225,28 @@ def on_process_job(args):
         # GetTopLevelSourceForIntermediateAsset ambiguous.
         sub_id = zlib.crc32(os.path.basename(tp).encode()) & 0x7fffffff
         p = azlmbr.asset.builder.JobProduct(tp, null_type, sub_id)
+        p.outputFlags = azlmbr.asset.builder.JobProduct_IntermediateAsset
+        p.dependenciesHandled = True
+        products.append(p)
+    # alpha-tested sub-materials need the alpha channel preserved through
+    # Image Compile: the *_diff suffix selects the Albedo preset (BC1, no
+    # alpha), so pin AlbedoWithGenericAlpha (BC3) via an .assetinfo sidecar.
+    alpha_preset = (
+        '<ObjectStream version="3">\n'
+        '\t<Class name="TextureSettings" version="1" '
+        'type="{980132FF-C450-425D-8AE0-BD96A8486177}">\n'
+        '\t\t<Class name="AZ::Uuid" field="PresetID" '
+        'value="{5D9ECB52-4CD9-4CB8-80E3-10CAE5EFB8A2}" '
+        'type="{E152C105-A133-4D03-BBF8-3D4B2FBA3E2A}"/>\n'
+        '\t</Class>\n</ObjectStream>\n')
+    for fname in sorted(need_alpha):
+        if fname not in tex_products:
+            continue
+        sidecar = tex_products[fname] + '.assetinfo'
+        with open(sidecar, 'w') as f:
+            f.write(alpha_preset)
+        sub_id = zlib.crc32(os.path.basename(sidecar).encode()) & 0x7fffffff
+        p = azlmbr.asset.builder.JobProduct(sidecar, null_type, sub_id)
         p.outputFlags = azlmbr.asset.builder.JobProduct_IntermediateAsset
         p.dependenciesHandled = True
         products.append(p)

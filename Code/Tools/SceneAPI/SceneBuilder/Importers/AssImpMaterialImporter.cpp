@@ -123,6 +123,8 @@ namespace AZ
                         material->SetEmissiveIntensity(assImpMaterial->GetEmissiveIntensity());
 
                         material->SetUseAOMap(assImpMaterial->GetUseAOMap());
+                        material->SetAlphaCutoff(assImpMaterial->GetAlphaCutoff());
+                        material->SetDoubleSided(assImpMaterial->IsDoubleSided());
                         material->SetTexture(
                             DataTypes::IMaterialData::TextureMapType::AmbientOcclusion,
                             ResolveTexturePath(materialName, context.m_sourceScene,

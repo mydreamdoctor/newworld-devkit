@@ -75,7 +75,7 @@ namespace AZ
         
         AZStd::string MaterialConverterSystemComponent::GetFingerprintInfo() const
         {
-            static constexpr int Version = 2; // Bump this version whenever changes are made to the material conversion code to force the AP to reprocess scene files
+            static constexpr int Version = 3; // Bump this version whenever changes are made to the material conversion code to force the AP to reprocess scene files
 
             AZStd::string fingerprintInfo = AZStd::string::format("[MaterialConverter version=%d enabled=%d", Version, IsEnabled());
              
@@ -162,6 +162,19 @@ namespace AZ
             if (1.0f - materialData.GetOpacity() > AZ::Constants::FloatEpsilon)
             {
                 sourceData.SetPropertyValue(Name{ "opacity.mode" }, AZStd::string("Blended"));
+            }
+
+            if (const AZStd::optional<float> alphaCutoff = materialData.GetAlphaCutoff(); alphaCutoff.has_value())
+            {
+                sourceData.SetPropertyValue(Name{ "opacity.mode" }, AZStd::string("Cutout"));
+                sourceData.SetPropertyValue(Name{ "opacity.alphaSource" }, AZStd::string("Packed"));
+                sourceData.SetPropertyValue(Name{ "opacity.factor" }, alphaCutoff.value());
+                sourceData.SetPropertyValue(Name{ "opacity.alphaAffectsSpecular" }, 1.0f);
+            }
+
+            if (materialData.IsDoubleSided())
+            {
+                sourceData.SetPropertyValue(Name{ "general.doubleSided" }, true);
             }
 
             auto applyOptionalPropertiesFunc = [&sourceData, &anyPBRInUse](const auto& propertyGroup, const auto& propertyName, const auto& propertyOptional)

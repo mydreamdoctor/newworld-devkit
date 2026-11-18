@@ -39,6 +39,8 @@ namespace AZ
             AZStd::optional<bool> GetUseEmissiveMap() const;
             AZStd::optional<float> GetEmissiveIntensity() const;
             AZStd::optional<bool> GetUseAOMap() const;
+            AZStd::optional<float> GetAlphaCutoff() const;
+            bool IsDoubleSided() const;
 
         protected:
             aiMaterial* m_assImpMaterial = nullptr;

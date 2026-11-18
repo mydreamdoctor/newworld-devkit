@@ -53,6 +53,8 @@ namespace AZ
                 SCENE_DATA_API virtual void SetUseEmissiveMap(AZStd::optional<bool> useEmissiveMap);
                 SCENE_DATA_API virtual void SetEmissiveIntensity(AZStd::optional<float> emissiveIntensity);
                 SCENE_DATA_API virtual void SetUseAOMap(AZStd::optional<bool> useAOMap);
+                SCENE_DATA_API virtual void SetAlphaCutoff(AZStd::optional<float> alphaCutoff);
+                SCENE_DATA_API virtual void SetDoubleSided(bool doubleSided);
                 
 
                 SCENE_DATA_API const AZStd::string& GetTexture(TextureMapType mapType) const override;
@@ -73,6 +75,8 @@ namespace AZ
                 SCENE_DATA_API AZStd::optional<bool> GetUseEmissiveMap() const override;
                 SCENE_DATA_API AZStd::optional<float> GetEmissiveIntensity() const override;
                 SCENE_DATA_API AZStd::optional<bool> GetUseAOMap() const override;
+                SCENE_DATA_API AZStd::optional<float> GetAlphaCutoff() const override;
+                SCENE_DATA_API bool IsDoubleSided() const override;
 
                 static void Reflect(ReflectContext* context);
 
@@ -94,6 +98,9 @@ namespace AZ
                 AZStd::optional<bool> m_useRoughnessMap = AZStd::nullopt;
                 AZStd::optional<bool> m_useEmissiveMap = AZStd::nullopt;
                 AZStd::optional<bool> m_useAOMap = AZStd::nullopt;
+
+                AZStd::optional<float> m_alphaCutoff = AZStd::nullopt;
+                bool m_doubleSided = false;
 
                 bool m_isNoDraw;
 
