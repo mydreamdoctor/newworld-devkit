@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import sys
+import zlib
 
 import azlmbr.asset.builder
 import azlmbr.bus
@@ -214,7 +215,11 @@ def on_process_job(args):
     product.dependenciesHandled = True
     products.append(product)
     for i, tp in enumerate(tex_products.values()):
-        p = azlmbr.asset.builder.JobProduct(tp, null_type, i + 1)
+        # subId must be stable across job runs: enumeration order shifts when
+        # a texture is skipped, which leaves duplicate product rows and makes
+        # GetTopLevelSourceForIntermediateAsset ambiguous.
+        sub_id = zlib.crc32(os.path.basename(tp).encode()) & 0x7fffffff
+        p = azlmbr.asset.builder.JobProduct(tp, null_type, sub_id)
         p.outputFlags = azlmbr.asset.builder.JobProduct_IntermediateAsset
         p.dependenciesHandled = True
         products.append(p)
