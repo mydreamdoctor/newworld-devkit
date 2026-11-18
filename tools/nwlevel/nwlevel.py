@@ -140,6 +140,12 @@ def main():
                     help='world offset for merged slice entities (the '
                          'position where the world map spawns the '
                          'composition slice)')
+    ap.add_argument('--chunks', type=int, default=0,
+                    help='write merged slice entities out to this many '
+                         'chunk prefabs under <level>/chunks/ instead of '
+                         'into the level prefab; the level stays small and '
+                         'the chunks are instantiated progressively by the '
+                         'auto-open script (keeps the editor responsive)')
     a = ap.parse_args()
 
     src = a.level_dir.rstrip('/')
@@ -163,6 +169,7 @@ def main():
             continue
         ix, iy = nw2level.region_index(rname)
         hm = decode(open(hm_path, 'rb').read())
+        nw2level.apply_cookies(hm, os.path.dirname(hm_path), mh)
         tif = os.path.join(img_dir, rname + '.tif')
         with open(tif, 'wb') as f:
             f.write(encode(hm, lzw=True, flip_y=False))
@@ -213,7 +220,71 @@ def main():
         print('placed %d slice entities under %s at %s'
               % (len(merged_ids), eid, a.at))
 
-    cx, cy, cz = _centroid(prefab)
+    if a.chunks and merged_ids:
+        chunk_dir = os.path.join(lvl_dir, 'chunks')
+        os.makedirs(chunk_dir, exist_ok=True)
+        at = a.at or (0.0, 0.0, 0.0)
+
+        def _ent_pos(k):
+            for c in prefab['Entities'][k]['Components'].values():
+                if 'Transform Data' in c:
+                    return c['Transform Data']['Translate']
+            return (0.0, 0.0, 0.0)
+
+        # centre-out order: the arena proper appears before far-flung art
+        ids = sorted(merged_ids,
+                     key=lambda k: sum((p - q) ** 2 for p, q in
+                                       zip(_ent_pos(k), at)))
+        per = (len(ids) + a.chunks - 1) // a.chunks
+        for ci in range(a.chunks):
+            group = ids[ci * per:(ci + 1) * per]
+            if not group:
+                break
+            nid0 = [1]
+
+            def _cid():
+                nid0[0] += 1
+                return nid0[0]
+
+            cname = 'chunk_%02d' % ci
+            cpf = {
+                'ContainerEntity': {
+                    'Id': 'Entity_[1]', 'Name': cname,
+                    'Components': {
+                        'Component_[0]': {
+                            '$type': nw2level.TRANSFORM_COMPONENT,
+                            'Id': _cid(),
+                            'Transform Data': {'Translate': [0.0, 0.0, 0.0]},
+                            'Parent Entity': ''},
+                        'Component_[1]': {'$type': 'EditorPrefabComponent',
+                                          'Id': _cid()}}},
+                'Entities': {}}
+            root = 'Entity_[%d]' % _cid()
+            cpf['Entities'][root] = {
+                'Id': root, 'Name': 'SlicePlacement',
+                'Components': {
+                    'Component_[0]': {
+                        '$type': nw2level.TRANSFORM_COMPONENT,
+                        'Id': _cid(),
+                        'Transform Data': {'Translate': list(at)},
+                        'Parent Entity': 'Entity_[1]'}}}
+            for k in group:
+                e = prefab['Entities'].pop(k)
+                for c in e['Components'].values():
+                    if 'Transform Data' in c:
+                        c['Parent Entity'] = root
+                        break
+                cpf['Entities'][k] = e
+            cpath = os.path.join(chunk_dir, cname + '.prefab')
+            with open(cpath, 'w') as f:
+                json.dump(cpf, f, indent=1)
+            print('  %s: %d entities' % (cname, len(group)))
+        print('wrote %d chunk prefabs to %s' % (ci + 1, chunk_dir))
+
+    if a.chunks and a.at:
+        cx, cy, cz = a.at  # art moved to chunks; aim at the placement
+    else:
+        cx, cy, cz = _centroid(prefab)
     cam = (cx, cy - 300.0, cz + 220.0)
     rot = (-35.0, 0.0, 0.0)
     nw2level._next_id[0] = _max_eid(prefab)  # keep aux ids collision-free

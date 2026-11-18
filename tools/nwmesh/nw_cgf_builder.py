@@ -10,6 +10,7 @@ retrigger the job.
 """
 import json
 import os
+import re
 import shutil
 import sys
 
@@ -45,23 +46,36 @@ def _scan_root(request):
 
 
 def _mesh_materials(mesh_path):
-    """Returns (mtl_path, {sub_name: {Map: abs_tex_path}}) or (None, {})."""
+    """Returns (mtl_path, {sub_name: {Map: abs_tex_path}}) or (None, {}).
+
+    The result is keyed by the MESH's sub-material names (cgf2glb looks
+    them up verbatim), so each mesh sub is mapped onto its mtl sub by
+    exact name or trailing-digit-stripped alias."""
     try:
         c = cgf.load(mesh_path)
     except Exception:
         return None, {}
-    mtl_path, m = nwmtl.find_mtl_for_mesh(mesh_path, c.mtl_subs or [c.mtl])
+    mesh_subs = c.mtl_subs or [c.mtl]
+    mtl_path, m = nwmtl.find_mtl_for_mesh(mesh_path, mesh_subs)
     if not m:
         return mtl_path, {}
     mesh_dir = os.path.dirname(mesh_path)
-    out = {}
+    by_strip = {}
     for sub in m.subs:
+        by_strip.setdefault(nwmtl.sub_key(sub.name), sub)
+    out = {}
+    for i, name in enumerate(mesh_subs):
+        sub = (m.by_name.get(name)
+               or by_strip.get(nwmtl.sub_key(name))
+               or (m.subs[i] if i < len(m.subs) else None))
+        if not sub or name in out:
+            continue
         tex = {}
         for mp, ref in sub.textures.items():
             p = nwmtl.resolve_texture(ref, mesh_dir)
             if p:
                 tex[mp] = p
-        out[sub.name] = tex
+        out[name] = tex
     return mtl_path, out
 
 
@@ -87,11 +101,11 @@ def on_create_jobs(args):
         deps.append(azlmbr.asset.builder.SourceFileDependency(
             request.sourceFile + 'heap', null, 0))
     # declare the .mtl and its textures as source dependencies
+    # (CreateJobsRequest has no fullPath — watchFolder + sourceFile)
     try:
-        full = getattr(request, 'fullPath', None)
-        if not full:
-            raise RuntimeError('no fullPath')
-        scan_root = _scan_root(request)
+        scan_root = request.watchFolder.replace('\\', '/')
+        full = os.path.join(scan_root,
+                            request.sourceFile.replace('\\', '/'))
         mtl_path, mats = _mesh_materials(full)
         def _in_root(p):
             r = _rel(p, scan_root)
@@ -120,7 +134,7 @@ def on_process_job(args):
     response = azlmbr.asset.builder.ProcessJobResponse()
     if not request.jobDescription.jobKey.startswith(JOB_KEY):
         return response
-    src = request.fullPath
+    src = request.fullPath.replace('\\', '/')
     base = os.path.splitext(os.path.basename(src))[0]
 
     # .cgfheap is a companion heap: emit a manifest so it registers as a
@@ -152,7 +166,10 @@ def on_process_job(args):
     texmap = {}
     tex_products = {}
     try:
-        _, mats = _mesh_materials(src)
+        _mp, mats = _mesh_materials(src)
+        print('nw_cgf_builder %s: mtl=%s mats={%s}'
+              % (base, _mp, ', '.join(
+                  '%r:%d' % (k, len(v)) for k, v in mats.items())))
         for sub_name, tex in mats.items():
             t = {}
             for mp, p in tex.items():
@@ -165,11 +182,18 @@ def on_process_job(args):
                     t['baseColor' if mp == 'Diffuse' else 'normal'] = fname
                     continue
                 outp = os.path.join(request.tempDirPath, fname)
-                if p.lower().endswith('.dds'):
-                    with open(outp, 'wb') as f:
-                        f.write(nwdds.reassemble(p))
-                else:
-                    shutil.copyfile(p, outp)
+                try:
+                    if p.lower().endswith('.dds'):
+                        with open(outp, 'wb') as f:
+                            f.write(nwdds.reassemble(p))
+                    else:
+                        shutil.copyfile(p, outp)
+                except Exception as e:
+                    # a stub .dds with no mip chunks must not drop the
+                    # whole mesh's material map — skip that one map.
+                    print('nw_cgf_builder %s: skip tex %s (%s)'
+                          % (base, p, e))
+                    continue
                 t['baseColor' if mp == 'Diffuse' else 'normal'] = fname
                 tex_products[fname] = outp
             if t:
@@ -210,7 +234,7 @@ def register():
     desc = azlmbr.asset.builder.AssetBuilderDesc()
     desc.name = 'NW CGF Builder'
     desc.busId = BUS_ID
-    desc.version = 12
+    desc.version = 19
     pats = []
     for pat in ('*.cgf', '*.cgfheap', '*.skin'):
         p = azlmbr.asset.builder.AssetBuilderPattern()

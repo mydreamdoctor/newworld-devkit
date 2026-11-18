@@ -224,6 +224,71 @@ def build_surfaces(level, src, out, rname):
     return gradients, materials, macros
 
 
+def apply_cookies(hm, region_dir, mountain_height):
+    """Apply capital 'cookie' terrain flattens to a decoded Heightmap.
+
+    Every *.capitals.json beside region.heightmap may carry capitals with a
+    'cookie' block {innerRadius, outerRadius, maxHeightBlend,
+    groundNoiseScale}. The client deforms the heightmap at runtime with
+    these: full flatten to the capital's world z inside innerRadius,
+    smoothstep blend back to the source height out to outerRadius
+    (radii in metres; 1 texel = 1 m). groundNoiseScale adds 4D simplex
+    noise on top — skipped when 0. maxHeightBlend is the flatten
+    strength weight (1.0 = full flatten toward the capital z; deltas
+    here exceed 40 m so it cannot be a metre cap).
+    World mapping: pixel col = world x, row = h-1 - world y.
+    Returns the number of cookies applied."""
+    applied = 0
+    scale = 65535.0 / mountain_height
+    for fn in sorted(glob.glob(os.path.join(region_dir,
+                                          '*.capitals.json'))):
+        try:
+            caps = json.load(open(fn))
+        except Exception:
+            continue
+        for c in caps.get('Capitals', []):
+            ck = c.get('cookie')
+            if not ck:
+                continue
+            wp = c.get('worldPosition') or {}
+            cx, cy = float(wp.get('x', 0)), float(wp.get('y', 0))
+            cz = float(wp.get('z', 0))
+            inner = float(ck.get('innerRadius', 0.0))
+            outer = float(ck.get('outerRadius', inner))
+            mhb = float(ck.get('maxHeightBlend', 0.0))
+            if outer <= 0:
+                continue
+            flat_raw = max(0, min(65535, int(round(cz * scale))))
+            x0, x1 = max(0, int(cx - outer - 1)), min(hm.w - 1,
+                                                    int(cx + outer + 1))
+            y0 = max(0, int(cy - outer - 1))
+            y1 = min(hm.h - 1, int(cy + outer + 1))
+            for wy in range(y0, y1 + 1):
+                row = (hm.h - 1) - wy
+                base = row * hm.w
+                for wx in range(x0, x1 + 1):
+                    dx, dy = wx - cx, wy - cy
+                    d2 = dx * dx + dy * dy
+                    if d2 > outer * outer:
+                        continue
+                    d = d2 ** 0.5
+                    i = base + wx
+                    cur = hm.raw[i]
+                    if d <= inner:
+                        new = flat_raw
+                    else:
+                        t = (d - inner) / (outer - inner)
+                        s = t * t * (3.0 - 2.0 * t)
+                        new = int(round(flat_raw * (1 - s) + cur * s))
+                    if mhb < 1.0:
+                        new = int(round(cur * (1 - mhb) + new * mhb))
+                    hm.raw[i] = new
+            applied += 1
+            print('  cookie %s: flatten to %.1fm r %.0f-%.0f at (%.1f,%.1f)'
+                  % (os.path.basename(fn), cz, inner, outer, cx, cy))
+    return applied
+
+
 def build_prefab(level, regions, surfaces=None):
     """regions: [(name,(ix,iy),size,mountainHeight,img_hint)]
     surfaces: {region_name: (gradients, materials, macros)} from
@@ -334,6 +399,7 @@ def main():
             continue
         ix, iy = region_index(rname)
         hm = decode(open(hm_path, 'rb').read())
+        apply_cookies(hm, os.path.dirname(hm_path), mh)
         # NOTE: no row flip. O3DE's image-gradient pipeline already maps
         # uv.y the opposite way to world y, matching NW's row-0-is-high-y.
         tif = os.path.join(img_dir, rname + '.tif')
