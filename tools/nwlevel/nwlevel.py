@@ -76,14 +76,9 @@ def _merge_slice(prefab, slice_raw, resolver=None, missing=None):
 
 
 def _aux_ents(prefab, camera_pos, camera_rot):
-    # Atom editor components serialize namespaced (AZ::Render::...) under
-    # Controller.Configuration; sky assets use the engine's default HDRi
-    # preset (goegap) which AP already produces as streamingimages.
-    skybox_asset = {
-        'assetId': {'guid': '{215E47FD-D181-5832-B1AB-91673ABF6399}',
-                    'subId': 1000},
-        'assetHint': 'lightingpresets/highcontrast/'
-                     'goegap_4k_skyboxcm.exr.streamingimage'}
+    # Physical sky replaces the goegap HDRi photo skybox (the photograph was
+    # visible through geometry gaps); the goegap IBL pair stays for ambient
+    # lighting only -- it is not rendered.
     ibl_guid = '{3FD09945-D0F2-55C8-B9AF-B2FD421FE3BE}'
     out = {}
     for name, rot, comps in (
@@ -94,9 +89,8 @@ def _aux_ents(prefab, camera_pos, camera_rot):
                             'CameraEntityId': '',
                             'ShadowFilterMethod': 1}})]),
         ('sky', None,
-         [nw2level.comp('AZ::Render::EditorHDRiSkyboxComponent',
-                        Controller={'Configuration': {
-                            'CubemapAsset': skybox_asset}}),
+         [nw2level.comp('AZ::Render::EditorPhysicalSkyComponent',
+                        Controller={'Configuration': {}}),
           nw2level.comp('AZ::Render::EditorImageBasedLightComponent',
                         Controller={'Configuration': {
                             'diffuseImageAsset': {

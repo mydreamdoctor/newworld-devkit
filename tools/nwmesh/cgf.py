@@ -151,7 +151,7 @@ def decode_stream(stype, data, ncount, esz, kind=None):
         if esz == 12:
             return [u('<3f', data, i * 12) for i in range(ncount)]
         if esz == 8:
-            return [u('<3e', data, i * 8) + (0,) for i in range(ncount)]
+            return [u('<3e', data, i * 8) for i in range(ncount)]
         # stride 16 (3f + 4B pad / w) or larger: first 12 bytes are xyz
         return [u('<3f', data, i * esz) for i in range(ncount)]
     if stype == ST_NORMAL:
