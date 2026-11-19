@@ -72,6 +72,7 @@ def convert(src, dst, texmap=None):
             double_sided = True
         mat_ids.append(g.material(
             name,
+            base_color=t.get('baseColor_factor'),
             base_image=_img(t['baseColor']) if 'baseColor' in t else None,
             normal_image=_img(t['normal']) if 'normal' in t else None,
             alpha_mode=alpha_mode, alpha_cutoff=alpha_cutoff,

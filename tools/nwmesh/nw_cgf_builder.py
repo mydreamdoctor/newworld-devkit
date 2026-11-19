@@ -72,11 +72,30 @@ def _mesh_materials(mesh_path):
         if not sub or name in out:
             continue
         tex = {'alpha_test': sub.alpha_test, 'opacity': sub.opacity}
+        if sub.diffuse and any(abs(c - 1.0) > 1e-3 for c in sub.diffuse[:3]):
+            # CryEngine multiplies the diffuse map by the material Diffuse
+            # color; carry it as glTF baseColorFactor.
+            tex['baseColor_factor'] = [min(max(c, 0.0), 1.0)
+                                       for c in sub.diffuse[:3]] + [1.0]
         if sub.emittance and any(c > 0 for c in sub.emittance[:3]):
             tex['emissive_factor'] = [min(max(c, 0.0), 1.0)
                                       for c in sub.emittance[:3]]
             if len(sub.emittance) > 3 and sub.emittance[3] > 0:
                 tex['emissive_strength'] = float(sub.emittance[3])
+        elif sub.shader.lower() == 'vegetation' \
+                and 'Emittance' not in sub.textures:
+            # Vegetation subs have no emit map: approximate the shader's
+            # backlit translucency (TransmittanceColor x
+            # BackDiffuseMultiplier) as a weak constant emissive lift so
+            # leaves keep their green cast under flat ambient.
+            tc = nwmtl._color(
+                sub.public_params.get('TransmittanceColor', ''))
+            bdm = nwmtl._float(
+                sub.public_params.get('BackDiffuseMultiplier'), 1.0)
+            if tc and any(c > 0 for c in tc[:3]):
+                tex['emissive_factor'] = [
+                    min(0.25, max(c, 0.0) * min(bdm, 2.0) * 0.075)
+                    for c in tc[:3]]
         for mp, ref in sub.textures.items():
             p = nwmtl.resolve_texture(ref, mesh_dir)
             if p:
@@ -180,7 +199,7 @@ def on_process_job(args):
         for sub_name, tex in mats.items():
             t = {k: tex[k] for k in
                  ('alpha_test', 'opacity', 'emissive_factor',
-                  'emissive_strength') if k in tex}
+                  'emissive_strength', 'baseColor_factor') if k in tex}
             sub_alpha = tex.get('alpha_test', 0) > 0 \
                 or 0 < tex.get('opacity', 1.0) < 1.0
             slot = {'Diffuse': 'baseColor', 'Bumpmap': 'normal',
