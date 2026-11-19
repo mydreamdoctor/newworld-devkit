@@ -9,6 +9,7 @@
 #include <API/EditorAssetSystemAPI.h>
 #include <SceneAPI/SceneBuilder/Importers/AssImpMaterialImporter.h>
 #include <AzCore/IO/FileIO.h>
+#include <AzCore/IO/Path/Path.h>
 #include <AzCore/Serialization/SerializeContext.h>
 #include <AzCore/std/smart_ptr/make_shared.h>
 #include <AzCore/std/containers/unordered_map.h>
@@ -293,20 +294,16 @@ namespace AZ
                 // If the texture did start with marker to change directories upward, then it's relative to the scene file,
                 // and that path needs to be resolved. It can't be resolved later. This was handled internally by FBX SDK,
                 // but is not handled by AssImp.
-                if (textureFilePath.starts_with(".."))
-                {
-                    // Not checking for the file existing because it may not be there yet.
-                    AZ_TracePrintf(AZ::SceneAPI::Utilities::LogWindow,
-                        "Material %.*s has a texture '%.*s' with a directory change marker. This may not resolve correctly, the texture may not be found or used by this material.",
-                        AZ_STRING_ARG(materialName), AZ_STRING_ARG(textureFilePath));
-                    return texturePathRelativeToScene;
-                }
+                // Normalize the joined path so "../" segments resolve against the scene
+                // directory first, then try to map the result into a scan folder.
+                AZ::IO::PathView texturePathView(texturePathRelativeToScene.c_str());
+                AZ::IO::FixedMaxPath normalizedTexturePath(texturePathView.LexicallyNormal());
 
                 bool generatedRelativeSourcePath = false;
                 AZStd::string relativePath, rootPath;
                 AzToolsFramework::AssetSystemRequestBus::BroadcastResult(
                     generatedRelativeSourcePath, &AzToolsFramework::AssetSystemRequestBus::Events::GenerateRelativeSourcePath,
-                    texturePathRelativeToScene.c_str(), relativePath, rootPath);
+                    normalizedTexturePath.c_str(), relativePath, rootPath);
 
                 // The engine only supports relative paths to scan folders.
                 // Scene files may have paths to textures, relative to the scene file.
@@ -316,6 +313,14 @@ namespace AZ
                     return relativePath;
                 }
 
+                if (textureFilePath.starts_with(".."))
+                {
+                    // Not checking for the file existing because it may not be there yet.
+                    AZ_TracePrintf(AZ::SceneAPI::Utilities::LogWindow,
+                        "Material %.*s has a texture '%.*s' with a directory change marker. This may not resolve correctly, the texture may not be found or used by this material.",
+                        AZ_STRING_ARG(materialName), AZ_STRING_ARG(textureFilePath));
+                    return texturePathRelativeToScene;
+                }
 
                 return textureFilePath;
             }

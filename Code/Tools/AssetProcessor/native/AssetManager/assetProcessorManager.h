@@ -18,6 +18,7 @@
 #include <QMap>
 #include <QPair>
 #include <QMutex>
+#include <QTimer>
 
 #include <AzCore/std/smart_ptr/shared_ptr.h>
 #include <AzCore/std/containers/unordered_map.h>
@@ -606,6 +607,15 @@ namespace AssetProcessor
 
         int m_numOfJobsToAnalyze = 0;
         bool m_alreadyQueuedCheckForIdle = false;
+
+        //! Writes a machine-readable JSON snapshot of the AP's current state
+        //! to <project>/user/log/ap_status.json.  Started by a 1-second timer in
+        //! the constructor; also driven synchronously inside long-running
+        //! serial phases (CheckMissingFiles) that block the event loop.
+        void WriteStatusFile();
+        QTimer* m_statusFileTimer = nullptr;
+        int m_missingFilesChecked = 0;
+        int m_missingFilesTotal = 0;
 
         // Files from the scanner, waiting for initial analysis
         QSet<AssetFileInfo> m_scannerFiles;

@@ -112,7 +112,7 @@ def _mesh_materials(mesh_path):
                 sub.public_params.get('BackDiffuseMultiplier'), 1.0)
             if tc and any(c > 0 for c in tc[:3]):
                 tex['emissive_factor'] = [
-                    min(0.25, max(c, 0.0) * min(bdm, 2.0) * 0.075)
+                    min(0.1, max(c, 0.0) * min(bdm, 2.0) * 0.02)
                     for c in tc[:3]]
         for mp, ref in sub.textures.items():
             p = nwmtl.resolve_texture(ref, mesh_dir)
@@ -321,7 +321,7 @@ def register():
     desc = azlmbr.asset.builder.AssetBuilderDesc()
     desc.name = 'NW CGF Builder'
     desc.busId = BUS_ID
-    desc.version = 20
+    desc.version = 25
     pats = []
     for pat in ('*.cgf', '*.cgfheap', '*.skin'):
         p = azlmbr.asset.builder.AssetBuilderPattern()

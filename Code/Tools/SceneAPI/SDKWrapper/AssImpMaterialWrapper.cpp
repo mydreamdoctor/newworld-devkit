@@ -274,7 +274,11 @@ namespace AZ
                 }
                 break;
             case MaterialMapType::Emissive:
-                if (m_assImpMaterial->GetTextureCount(aiTextureType_EMISSION_COLOR) > textureIndex)
+                if (m_assImpMaterial->GetTextureCount(aiTextureType_EMISSIVE) > textureIndex)
+                {
+                    m_assImpMaterial->GetTexture(aiTextureType_EMISSIVE, textureIndex, &absTexturePath);
+                }
+                else if (m_assImpMaterial->GetTextureCount(aiTextureType_EMISSION_COLOR) > textureIndex)
                 {
                     m_assImpMaterial->GetTexture(aiTextureType_EMISSION_COLOR, textureIndex, &absTexturePath);
                 }

@@ -202,7 +202,11 @@ def decode_mip0(data):
 
 
 def _rgba_dds(w, h, rgba):
-    """Minimal uncompressed RGBA32 DDS (bytes stored R,G,B,A)."""
+    """Minimal uncompressed RGBA32 DDS (bytes stored R,G,B,A).
+
+    Uses a DX10 header with DXGI_FORMAT_R8G8B8A8_UNORM_SRGB so downstream
+    image compilers tag the data sRGB; a legacy RGBA-mask header reads as
+    linear and washes out authored sRGB pixels."""
     hdr = struct.pack(
         '<4s I I I I I I I 44s I I I I 4I I 4I',
         b'DDS ',
@@ -213,22 +217,59 @@ def _rgba_dds(w, h, rgba):
         1,            # mipMapCount
         b'\0' * 44,   # reserved1
         32,           # pf size
-        0x41,         # DDPF_RGB|DDPF_ALPHAPIXELS
-        0,            # fourCC
-        32,           # bitcount
-        0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000,   # RGBA masks
+        0x4,          # DDPF_FOURCC
+        0x30315844,   # 'DX10'
+        0,            # bitcount
+        0, 0, 0, 0,   # RGBA masks (unused for DX10)
         0x1000,       # DDSCAPS_TEXTURE
         0, 0, 0, 0)   # caps2,3,4,reserved2
-    return hdr + bytes(rgba)
+    ext = struct.pack('<5I', 29, 3, 0, 1, 0)  # R8G8B8A8_UNORM_SRGB, 2D
+    return hdr + ext + bytes(rgba)
 
 
 def merge_opacity_alpha(diff_path, opacity_path):
     """Reassemble+decode both DDS, return RGBA32 DDS bytes of diff's RGB
-    with opacity's channel as alpha. Sizes must match."""
+    with opacity's channel as alpha. NW ships opacity maps at a lower
+    resolution than the diffuse; resample to the diffuse size."""
     dw, dh, drgba = decode_mip0(reassemble(diff_path))
     ow, oh, orgba = decode_mip0(reassemble(opacity_path))
+    if all(v == 255 for v in orgba[3::4]):
+        # Opacity stored as a grayscale RGB mask (e.g. BC1) rather than in
+        # an alpha channel: decoded alpha is all-opaque, so take the mask
+        # from luminance instead.
+        mask = bytes(max(orgba[i], orgba[i + 1], orgba[i + 2])
+                     for i in range(0, len(orgba), 4))
+    else:
+        mask = orgba[3::4]
     if (ow, oh) != (dw, dh):
-        raise ValueError('opacity %dx%d != diffuse %dx%d'
-                         % (ow, oh, dw, dh))
-    drgba[3::4] = orgba[3::4]
+        # bilinear resample of the alpha channel
+        resampled = bytearray(dw * dh)
+        for y in range(dh):
+            sy = (y + 0.5) * oh / dh - 0.5
+            y0 = int(sy)
+            fy = sy - y0
+            y1 = y0 + 1
+            if y0 < 0:
+                y0 = 0
+                fy = 0.0
+            if y1 >= oh:
+                y1 = oh - 1
+                fy = 1.0
+            for x in range(dw):
+                sx = (x + 0.5) * ow / dw - 0.5
+                x0 = int(sx)
+                fx = sx - x0
+                x1 = x0 + 1
+                if x0 < 0:
+                    x0 = 0
+                    fx = 0.0
+                if x1 >= ow:
+                    x1 = ow - 1
+                    fx = 1.0
+                a = mask[y0 * ow + x0] * (1 - fx) + mask[y0 * ow + x1] * fx
+                b = mask[y1 * ow + x0] * (1 - fx) + mask[y1 * ow + x1] * fx
+                resampled[y * dw + x] = int(a * (1 - fy) + b * fy + 0.5)
+        drgba[3::4] = resampled
+    else:
+        drgba[3::4] = mask
     return _rgba_dds(dw, dh, drgba)

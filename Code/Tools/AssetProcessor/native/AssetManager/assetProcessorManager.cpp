@@ -82,6 +82,10 @@ namespace AssetProcessor
 
         PopulateJobStateCache();
 
+        m_statusFileTimer = new QTimer(this);
+        connect(m_statusFileTimer, &QTimer::timeout, this, &AssetProcessorManager::WriteStatusFile);
+        m_statusFileTimer->start(1000);
+
         AssetProcessor::ProcessingJobInfoBus::Handler::BusConnect();
         AZ::Interface<AssetProcessor::RecognizerConfiguration>::Register(m_platformConfig);
     }
@@ -207,6 +211,93 @@ namespace AssetProcessor
         AZ_TracePrintf(AssetProcessor::ConsoleChannel, "Initial Scan complete, checking for missing files...\n");
         m_isCurrentlyScanning = false;
         CheckMissingFiles();
+    }
+
+    void AssetProcessorManager::WriteStatusFile()
+    {
+        const char* phase = "idle";
+        if (m_isCurrentlyScanning)
+        {
+            phase = "scanning";
+        }
+        else if (m_missingFilesChecked < m_missingFilesTotal)
+        {
+            phase = "missing-files";
+        }
+        else if (!m_jobRunKeyToJobInfoMap.empty() || !m_activeFiles.isEmpty()
+                 || !m_filesToExamine.isEmpty() || m_numOfJobsToAnalyze > 0)
+        {
+            phase = "processing";
+        }
+
+        AZStd::string inProgress;
+        int queued = 0, running = 0;
+        for (const auto& pair : m_jobRunKeyToJobInfoMap)
+        {
+            if (pair.second.m_status == JobStatus::InProgress)
+            {
+                ++running;
+                if (running <= 16)
+                {
+                    if (!inProgress.empty())
+                    {
+                        inProgress += ',';
+                    }
+                    inProgress += AZStd::string::format(
+                        "\"%s:%s\"", pair.second.m_sourceFile.c_str(),
+                        pair.second.m_jobKey.c_str());
+                }
+            }
+            else
+            {
+                ++queued;
+            }
+        }
+
+        AZStd::string json = AZStd::string::format(
+            "{\n"
+            "  \"phase\": \"%s\",\n"
+            "  \"busy\": %s,\n"
+            "  \"scanning\": %s,\n"
+            "  \"scan_files_assessed\": %d,\n"
+            "  \"scan_files_total\": %d,\n"
+            "  \"files_to_examine\": %d,\n"
+            "  \"active_files\": %d,\n"
+            "  \"jobs_to_analyze\": %d,\n"
+            "  \"jobs_to_process\": %d,\n"
+            "  \"job_entries\": %d,\n"
+            "  \"jobs_queued\": %d,\n"
+            "  \"jobs_in_progress\": %d,\n"
+            "  \"missing_files_checked\": %d,\n"
+            "  \"missing_files_total\": %d,\n"
+            "  \"in_progress_jobs\": [%s]\n"
+            "}\n",
+            phase,
+            m_AssetProcessorIsBusy ? "true" : "false",
+            m_isCurrentlyScanning ? "true" : "false",
+            m_scannerFilesAssessed, m_totalScannerFilesToAssess,
+            aznumeric_cast<int>(m_filesToExamine.size()), aznumeric_cast<int>(m_activeFiles.size()),
+            m_numOfJobsToAnalyze,
+            aznumeric_cast<int>(m_jobsToProcess.size()),
+            aznumeric_cast<int>(m_jobEntries.size()),
+            queued, running,
+            m_missingFilesChecked, m_missingFilesTotal,
+            inProgress.c_str());
+
+        auto* fileIO = AZ::IO::FileIOBase::GetInstance();
+        if (!fileIO)
+        {
+            return;
+        }
+        const char* tmpPath = "@projectroot@/user/log/ap_status.json.tmp";
+        AZ::IO::HandleType handle;
+        if (fileIO->Open(tmpPath, AZ::IO::OpenMode::ModeWrite | AZ::IO::OpenMode::ModeCreatePath | AZ::IO::OpenMode::ModeText, handle))
+        {
+            fileIO->Write(handle, json.data(), json.size());
+            fileIO->Close(handle);
+            fileIO->Remove("@projectroot@/user/log/ap_status.json");
+            fileIO->Rename(tmpPath, "@projectroot@/user/log/ap_status.json");
+        }
     }
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -554,6 +645,9 @@ namespace AssetProcessor
         }
 
         // note that m_SourceFilesInDatabase is a map from (full absolute path) --> (database name for file)
+        m_missingFilesTotal = m_sourceFilesInDatabase.size();
+        m_missingFilesChecked = 0;
+        WriteStatusFile();
         for (auto iter = m_sourceFilesInDatabase.begin(); iter != m_sourceFilesInDatabase.end(); iter++)
         {
             if (iter.value().m_sourceAssetReference)
@@ -562,6 +656,12 @@ namespace AssetProcessor
                 // iter.key is the full path normalized.  iter.value is the database path.
                 // we need the relative path too:
                 CheckDeletedSourceFile(iter.value().m_sourceAssetReference, AZStd::chrono::steady_clock::now());
+            }
+            if (++m_missingFilesChecked % 250 == 0)
+            {
+                AZ_TracePrintf(AssetProcessor::ConsoleChannel,
+                    "Checking for missing files: %d / %d\n", m_missingFilesChecked, m_missingFilesTotal);
+                WriteStatusFile();
             }
         }
 
