@@ -71,13 +71,31 @@ def _mesh_materials(mesh_path):
                or (m.subs[i] if i < len(m.subs) else None))
         if not sub or name in out:
             continue
-        tex = {'alpha_test': sub.alpha_test, 'opacity': sub.opacity}
+        tex = {'alpha_test': sub.alpha_test, 'opacity': sub.opacity,
+               'shininess': sub.shininess}
+        if sub.shader.lower() == 'vegetation':
+            # leaf cards are flat sheets; keep them matte or the sky
+            # IBL mirrors off them and blows the canopy to white
+            tex['roughness'] = 0.9
+        else:
+            tex['roughness'] = min(1.0, max(0.05, 1.0 - sub.shininess / 255.0))
         if sub.diffuse and any(abs(c - 1.0) > 1e-3 for c in sub.diffuse[:3]):
             # CryEngine multiplies the diffuse map by the material Diffuse
             # color; carry it as glTF baseColorFactor.
             tex['baseColor_factor'] = [min(max(c, 0.0), 1.0)
                                        for c in sub.diffuse[:3]] + [1.0]
-        if sub.emittance and any(c > 0 for c in sub.emittance[:3]):
+        if sub.shader.lower() == 'vegetation':
+            # NW's vegetation shading + grading saturates leaves toward
+            # green; the raw sage diffuse renders washed-out under O3DE
+            # lighting. Approximate with a green-ward albedo tint.
+            tint = (0.52, 0.92, 0.40)
+            bc = tex.get('baseColor_factor', [1.0, 1.0, 1.0, 1.0])
+            tex['baseColor_factor'] = [
+                min(1.0, bc[i] * tint[i]) for i in range(3)] + [1.0]
+        if sub.emittance and any(c > 0 for c in sub.emittance[:3]) \
+                and (len(sub.emittance) < 4 or sub.emittance[3] > 0):
+            # Emittance is (r,g,b,intensity); intensity 0 means the
+            # material emits nothing despite a non-zero color.
             tex['emissive_factor'] = [min(max(c, 0.0), 1.0)
                                       for c in sub.emittance[:3]]
             if len(sub.emittance) > 3 and sub.emittance[3] > 0:
@@ -199,7 +217,8 @@ def on_process_job(args):
         for sub_name, tex in mats.items():
             t = {k: tex[k] for k in
                  ('alpha_test', 'opacity', 'emissive_factor',
-                  'emissive_strength', 'baseColor_factor') if k in tex}
+                  'emissive_strength', 'baseColor_factor',
+                  'shininess', 'roughness') if k in tex}
             sub_alpha = tex.get('alpha_test', 0) > 0 \
                 or 0 < tex.get('opacity', 1.0) < 1.0
             slot = {'Diffuse': 'baseColor', 'Bumpmap': 'normal',

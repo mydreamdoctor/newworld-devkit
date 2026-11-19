@@ -79,7 +79,8 @@ def convert(src, dst, texmap=None):
             double_sided=double_sided,
             emissive_image=_img(t['emissive']) if 'emissive' in t else None,
             emissive_factor=t.get('emissive_factor'),
-            emissive_strength=t.get('emissive_strength')))
+            emissive_strength=t.get('emissive_strength'),
+            roughness_factor=t.get('roughness')))
     # Skinned path: skeleton from the file's own CompiledBones chunk.
     bones = None
     try:

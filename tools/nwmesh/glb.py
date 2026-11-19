@@ -63,11 +63,16 @@ class Gltf:
     def material(self, name, base_image=None, normal_image=None,
                  base_color=None, alpha_mode=None, alpha_cutoff=None,
                  double_sided=False, emissive_image=None,
-                 emissive_factor=None, emissive_strength=None):
+                 emissive_factor=None, emissive_strength=None,
+                 metallic_factor=0.0, roughness_factor=None):
         """base_image/normal_image/emissive_image: image indexes.
         base_color: rgba. emissive_factor: rgb 0..1. emissive_strength:
-        KHR_materials_emissive_strength multiplier (>1 allowed)."""
-        pbr = {}
+        KHR_materials_emissive_strength multiplier (>1 allowed).
+        metallic_factor defaults to 0 -- glTF's spec default is 1.0,
+        which renders materials chrome."""
+        pbr = {'metallicFactor': float(metallic_factor)}
+        if roughness_factor is not None:
+            pbr['roughnessFactor'] = float(roughness_factor)
         if base_image is not None:
             pbr['baseColorTexture'] = {'index': base_image}
         if base_color is not None:
