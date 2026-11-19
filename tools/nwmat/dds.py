@@ -122,3 +122,113 @@ if __name__ == '__main__':
     import sys
     for w in reassemble_tree(sys.argv[1], sys.argv[2]):
         print(w)
+
+
+def _a_block(data, off):
+    """8-byte BC4/BC3-alpha block -> 16 alpha values."""
+    a0, a1 = data[off], data[off + 1]
+    bits = int.from_bytes(data[off + 2:off + 8], 'little')
+    if a0 > a1:
+        lut = [a0, a1] + [(a0 * (7 - i) + a1 * i) // 7 for i in range(1, 7)]
+    else:
+        lut = ([a0, a1]
+               + [(a0 * (5 - i) + a1 * i) // 5 for i in range(1, 5)]
+               + [0, 255])
+    return [lut[(bits >> (3 * i)) & 7] for i in range(16)]
+
+
+def _c_block(data, off):
+    """8-byte BC1/BC3-color block -> 16 (r,g,b) tuples."""
+    c0, c1 = struct.unpack_from('<HH', data, off)
+    bits = int.from_bytes(data[off + 4:off + 8], 'little')
+    r0, g0, b0 = ((c0 >> 11) * 255 // 31, ((c0 >> 5) & 63) * 255 // 63,
+                  (c0 & 31) * 255 // 31)
+    r1, g1, b1 = ((c1 >> 11) * 255 // 31, ((c1 >> 5) & 63) * 255 // 63,
+                  (c1 & 31) * 255 // 31)
+    if c0 > c1:
+        lut = [(r0, g0, b0), (r1, g1, b1),
+               ((2 * r0 + r1) // 3, (2 * g0 + g1) // 3, (2 * b0 + b1) // 3),
+               ((r0 + 2 * r1) // 3, (g0 + 2 * g1) // 3, (b0 + 2 * b1) // 3)]
+    else:
+        lut = [(r0, g0, b0), (r1, g1, b1),
+               ((r0 + r1) // 2, (g0 + g1) // 2, (b0 + b1) // 2), (0, 0, 0)]
+    return [lut[(bits >> (2 * i)) & 3] for i in range(16)]
+
+
+def decode_mip0(data):
+    """Decode mip0 of a complete BC1/BC2/BC3/BC4 DDS -> (w, h, rgba bytes)."""
+    h = struct.unpack_from('<I', data, 12)[0]
+    w = struct.unpack_from('<I', data, 16)[0]
+    dxgi = struct.unpack_from('<I', data, 128)[0]
+    if dxgi in (80, 81, 82):          # BC4: single-channel alpha block
+        bpb, has_col = 8, False
+    elif dxgi in (71, 72, 73):        # BC1
+        bpb, has_col, bc3a = 8, True, False
+    elif dxgi in (74, 75, 76):        # BC2 (alpha block 8B explicit)
+        bpb, has_col, bc3a = 16, True, 'bc2'
+    elif dxgi in (77, 78, 79):        # BC3
+        bpb, has_col, bc3a = 16, True, True
+    else:
+        raise ValueError('decode_mip0: unsupported dxgi %d' % dxgi)
+    out = bytearray(w * h * 4)
+    bw, bh = (w + 3) // 4, (h + 3) // 4
+    for byi in range(bh):
+        for bxi in range(bw):
+            off = HDR + (byi * bw + bxi) * bpb
+            if dxgi in (80, 81, 82):
+                px = [(0, 0, 0)] * 16
+                al = _a_block(data, off)
+            else:
+                if bc3a is True:
+                    al = _a_block(data, off)
+                    coff = off + 8
+                elif bc3a == 'bc2':
+                    abits = int.from_bytes(data[off:off + 8], 'little')
+                    al = [((abits >> (4 * i)) & 15) * 17 for i in range(16)]
+                    coff = off + 8
+                else:
+                    al = [255] * 16
+                    coff = off
+                px = _c_block(data, coff)
+            for i, (r, g, b) in enumerate(px):
+                x, y = bxi * 4 + i % 4, byi * 4 + i // 4
+                if x < w and y < h:
+                    o = (y * w + x) * 4
+                    out[o] = r
+                    out[o + 1] = g
+                    out[o + 2] = b
+                    out[o + 3] = al[i]
+    return w, h, out
+
+
+def _rgba_dds(w, h, rgba):
+    """Minimal uncompressed RGBA32 DDS (bytes stored R,G,B,A)."""
+    hdr = struct.pack(
+        '<4s I I I I I I I 44s I I I I 4I I 4I',
+        b'DDS ',
+        124,          # header size
+        0x100F,       # DDSD_CAPS|HEIGHT|WIDTH|PIXELFORMAT|PITCH
+        h, w, w * 4,  # height, width, pitch
+        0,            # depth
+        1,            # mipMapCount
+        b'\0' * 44,   # reserved1
+        32,           # pf size
+        0x41,         # DDPF_RGB|DDPF_ALPHAPIXELS
+        0,            # fourCC
+        32,           # bitcount
+        0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000,   # RGBA masks
+        0x1000,       # DDSCAPS_TEXTURE
+        0, 0, 0, 0)   # caps2,3,4,reserved2
+    return hdr + bytes(rgba)
+
+
+def merge_opacity_alpha(diff_path, opacity_path):
+    """Reassemble+decode both DDS, return RGBA32 DDS bytes of diff's RGB
+    with opacity's channel as alpha. Sizes must match."""
+    dw, dh, drgba = decode_mip0(reassemble(diff_path))
+    ow, oh, orgba = decode_mip0(reassemble(opacity_path))
+    if (ow, oh) != (dw, dh):
+        raise ValueError('opacity %dx%d != diffuse %dx%d'
+                         % (ow, oh, dw, dh))
+    drgba[3::4] = orgba[3::4]
+    return _rgba_dds(dw, dh, drgba)

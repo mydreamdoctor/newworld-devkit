@@ -218,8 +218,16 @@ def on_process_job(args):
                 outp = os.path.join(request.tempDirPath, fname)
                 try:
                     if p.lower().endswith('.dds'):
-                        with open(outp, 'wb') as f:
-                            f.write(nwdds.reassemble(p))
+                        if mp == 'Diffuse' and tex.get('Opacity'):
+                            # NW leaf materials keep alpha in a separate
+                            # BC4 Opacity map and ship an all-zero diffuse
+                            # alpha; merge so Packed-alpha cutout works.
+                            with open(outp, 'wb') as f:
+                                f.write(nwdds.merge_opacity_alpha(
+                                    p, tex['Opacity']))
+                        else:
+                            with open(outp, 'wb') as f:
+                                f.write(nwdds.reassemble(p))
                     else:
                         shutil.copyfile(p, outp)
                 except Exception as e:
