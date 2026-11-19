@@ -76,10 +76,11 @@ def _merge_slice(prefab, slice_raw, resolver=None, missing=None):
 
 
 def _aux_ents(prefab, camera_pos, camera_rot):
-    # Physical sky replaces the goegap HDRi photo skybox (the photograph was
-    # visible through geometry gaps); the goegap IBL pair stays for ambient
-    # lighting only -- it is not rendered.
-    ibl_guid = '{3FD09945-D0F2-55C8-B9AF-B2FD421FE3BE}'
+    # Physical sky replaces the HDRi photo skybox (the photograph was
+    # visible through geometry gaps); the blau_river IBL pair provides
+    # ambient lighting only -- it is not rendered. Cool-toned river
+    # preset; the goegap desert preset washed the foliage out to brown.
+    ibl_guid = '{442FFD57-9ED2-51A5-B627-764AE2A2161F}'
     out = {}
     for name, rot, comps in (
         ('sun', (-55.0, 0.0, 25.0),
@@ -96,13 +97,13 @@ def _aux_ents(prefab, camera_pos, camera_rot):
                             'exposure': 2.0,
                             'diffuseImageAsset': {
                                 'assetId': {'guid': ibl_guid, 'subId': 3000},
-                                'assetHint': 'lightingpresets/highcontrast/'
-                                             'goegap_4k_iblglobalcm_ibldiffuse'
+                                'assetHint': 'lightingpresets/lowcontrast/'
+                                             'blau_river_4k_iblskyboxcm_ibldiffuse'
                                              '.exr.streamingimage'},
                             'specularImageAsset': {
                                 'assetId': {'guid': ibl_guid, 'subId': 2000},
-                                'assetHint': 'lightingpresets/highcontrast/'
-                                             'goegap_4k_iblglobalcm_iblspecular'
+                                'assetHint': 'lightingpresets/lowcontrast/'
+                                             'blau_river_4k_iblskyboxcm_iblspecular'
                                              '.exr.streamingimage'}}})]),
         ('devkit_camera', list(camera_rot),
          [nw2level.comp(

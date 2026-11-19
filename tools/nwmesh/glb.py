@@ -62,8 +62,11 @@ class Gltf:
 
     def material(self, name, base_image=None, normal_image=None,
                  base_color=None, alpha_mode=None, alpha_cutoff=None,
-                 double_sided=False):
-        """base_image/normal_image: image indexes. base_color: rgba."""
+                 double_sided=False, emissive_image=None,
+                 emissive_factor=None, emissive_strength=None):
+        """base_image/normal_image/emissive_image: image indexes.
+        base_color: rgba. emissive_factor: rgb 0..1. emissive_strength:
+        KHR_materials_emissive_strength multiplier (>1 allowed)."""
         pbr = {}
         if base_image is not None:
             pbr['baseColorTexture'] = {'index': base_image}
@@ -72,6 +75,19 @@ class Gltf:
         m = {'name': name, 'pbrMetallicRoughness': pbr}
         if normal_image is not None:
             m['normalTexture'] = {'index': normal_image}
+        if emissive_image is not None:
+            m['emissiveTexture'] = {'index': emissive_image}
+        if emissive_image is not None or emissive_factor is not None:
+            m['emissiveFactor'] = list(
+                emissive_factor if emissive_factor is not None
+                else [1.0, 1.0, 1.0])
+        if emissive_strength:
+            m.setdefault('extensions', {})[
+                'KHR_materials_emissive_strength'] = {
+                'emissiveStrength': float(emissive_strength)}
+            ext = self.g.setdefault('extensionsUsed', [])
+            if 'KHR_materials_emissive_strength' not in ext:
+                ext.append('KHR_materials_emissive_strength')
         if alpha_mode:
             m['alphaMode'] = alpha_mode
         if alpha_cutoff is not None:

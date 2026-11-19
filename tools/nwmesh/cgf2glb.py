@@ -75,7 +75,10 @@ def convert(src, dst, texmap=None):
             base_image=_img(t['baseColor']) if 'baseColor' in t else None,
             normal_image=_img(t['normal']) if 'normal' in t else None,
             alpha_mode=alpha_mode, alpha_cutoff=alpha_cutoff,
-            double_sided=double_sided))
+            double_sided=double_sided,
+            emissive_image=_img(t['emissive']) if 'emissive' in t else None,
+            emissive_factor=t.get('emissive_factor'),
+            emissive_strength=t.get('emissive_strength')))
     # Skinned path: skeleton from the file's own CompiledBones chunk.
     bones = None
     try:
@@ -136,6 +139,13 @@ def convert(src, dst, texmap=None):
             for s_i, s in enumerate(subs):
                 sidx = idx[s['first_idx']:s['first_idx'] + s['n_idx']]
                 if not sidx:
+                    continue
+                sname = (c.mtl_subs[s['matid']]
+                         if s['matid'] < len(c.mtl_subs) else '') or ''
+                # 'Shadow' subsets re-draw the same leaf cards as a
+                # shadow-pass proxy; 'Collision'/'nodraw' subs are never
+                # render geometry.
+                if sname.lower() in ('shadow', 'collision', 'nodraw'):
                     continue
                 prims.append({'attributes': attrs,
                               'indices': g.accessor(5125, 'SCALAR', sidx,

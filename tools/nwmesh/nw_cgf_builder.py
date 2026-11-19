@@ -72,6 +72,11 @@ def _mesh_materials(mesh_path):
         if not sub or name in out:
             continue
         tex = {'alpha_test': sub.alpha_test, 'opacity': sub.opacity}
+        if sub.emittance and any(c > 0 for c in sub.emittance[:3]):
+            tex['emissive_factor'] = [min(max(c, 0.0), 1.0)
+                                      for c in sub.emittance[:3]]
+            if len(sub.emittance) > 3 and sub.emittance[3] > 0:
+                tex['emissive_strength'] = float(sub.emittance[3])
         for mp, ref in sub.textures.items():
             p = nwmtl.resolve_texture(ref, mesh_dir)
             if p:
@@ -173,11 +178,15 @@ def on_process_job(args):
               % (base, _mp, ', '.join(
                   '%r:%d' % (k, len(v)) for k, v in mats.items())))
         for sub_name, tex in mats.items():
-            t = {k: tex[k] for k in ('alpha_test', 'opacity') if k in tex}
+            t = {k: tex[k] for k in
+                 ('alpha_test', 'opacity', 'emissive_factor',
+                  'emissive_strength') if k in tex}
             sub_alpha = tex.get('alpha_test', 0) > 0 \
                 or 0 < tex.get('opacity', 1.0) < 1.0
+            slot = {'Diffuse': 'baseColor', 'Bumpmap': 'normal',
+                    'Emittance': 'emissive'}
             for mp, p in tex.items():
-                if mp not in ('Diffuse', 'Bumpmap'):
+                if mp not in slot:
                     continue
                 # prefix with the mesh stem: intermediate products land
                 # beside the .glb and must not collide across jobs.
@@ -185,7 +194,7 @@ def on_process_job(args):
                 if sub_alpha and mp == 'Diffuse':
                     need_alpha.add(fname)
                 if fname in tex_products:
-                    t['baseColor' if mp == 'Diffuse' else 'normal'] = fname
+                    t[slot[mp]] = fname
                     continue
                 outp = os.path.join(request.tempDirPath, fname)
                 try:
@@ -200,7 +209,7 @@ def on_process_job(args):
                     print('nw_cgf_builder %s: skip tex %s (%s)'
                           % (base, p, e))
                     continue
-                t['baseColor' if mp == 'Diffuse' else 'normal'] = fname
+                t[slot[mp]] = fname
                 tex_products[fname] = outp
             if t:
                 texmap[sub_name] = t
