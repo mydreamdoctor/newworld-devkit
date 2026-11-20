@@ -23,6 +23,8 @@ import re
 import shutil
 import sys
 
+import nwenv
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', 'nwterrain'))
@@ -75,18 +77,23 @@ def _merge_slice(prefab, slice_raw, resolver=None, missing=None):
     return len(remap), skipped
 
 
-def _aux_ents(prefab, camera_pos, camera_rot):
-    # Physical sky replaces the HDRi photo skybox (the photograph was
-    # visible through geometry gaps); the blau_river IBL pair provides
-    # ambient lighting only -- it is not rendered. Cool-toned river
-    # preset; the goegap desert preset washed the foliage out to brown.
+def _aux_ents(prefab, camera_pos, camera_rot, light=None):
+    # Lighting comes from the game level's own environment block
+    # (mission_mission0.xml inside level.pak, parsed by nwenv). The
+    # Physical sky replaces the HDRi photo skybox; the blau_river IBL
+    # pair provides ambient lighting only -- it is not rendered.
+    light = light or {}
+    sun_rot = light.get('sun_rotation', (-55.0, 0.0, 25.0))
+    sun_color = light.get('sun_color', nwenv.DEFAULT_SUN_COLOR)
+    sun_intensity = light.get('sun_intensity', nwenv.DEFAULT_SUN_INTENSITY)
     ibl_guid = '{442FFD57-9ED2-51A5-B627-764AE2A2161F}'
     out = {}
     for name, rot, comps in (
-        ('sun', (-55.0, 0.0, 25.0),
+        ('sun', sun_rot,
          [nw2level.comp('AZ::Render::EditorDirectionalLightComponent',
                         Controller={'Configuration': {
-                            'Intensity': 1.5,
+                            'Intensity': sun_intensity,
+                            'Color': list(sun_color),
                             'CameraEntityId': '',
                             'ShadowFilterMethod': 1}})]),
         ('sky', None,
@@ -165,6 +172,9 @@ def main():
                     help='bake capital cookie flattens into the TIFF '
                          '(legacy — default is raw TIFF + NWCapital gem '
                          'stamps at sample time)')
+    ap.add_argument('--env-pak', default=None,
+                    help='level.pak to read <Environment> (sun/fog) from; '
+                         'default: auto-discover from the level dir name')
     a = ap.parse_args()
 
     src = a.level_dir.rstrip('/')
@@ -319,7 +329,16 @@ def main():
     cam = (cx, cy - 300.0, cz + 220.0)
     rot = (-35.0, 0.0, 0.0)
     nw2level._next_id[0] = _max_eid(prefab)  # keep aux ids collision-free
-    prefab['Entities'].update(_aux_ents(prefab, cam, rot))
+    pak = a.env_pak or nwenv.find_level_pak(src)
+    env = nwenv.read_level_environment(pak) if pak else {}
+    if env:
+        print('lighting from %s: sun_vector=%s fog=%s'
+              % (os.path.basename(pak), env.get('sun_vector'),
+                 env.get('fog_view_distance')))
+    else:
+        print('lighting: no environment data found, using defaults')
+    prefab['Entities'].update(_aux_ents(prefab, cam, rot,
+                                        nwenv.lighting_config(env)))
     print('camera at %s toward centroid %s' % (cam, (cx, cy, cz)))
 
     ppath = os.path.join(lvl_dir, a.name + '.prefab')
