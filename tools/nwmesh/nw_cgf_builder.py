@@ -99,7 +99,10 @@ def _mesh_materials(mesh_path):
             tex['emissive_factor'] = [min(max(c, 0.0), 1.0)
                                       for c in sub.emittance[:3]]
             if len(sub.emittance) > 3 and sub.emittance[3] > 0:
-                tex['emissive_strength'] = float(sub.emittance[3])
+                # CryEngine emittance intensity is not on Atom's scale:
+                # NW ships values like 10 that blow out to white when
+                # mip-averaged emit maps spread across whole cards.
+                tex['emissive_strength'] = min(1.0, float(sub.emittance[3]))
         elif sub.shader.lower() == 'vegetation' \
                 and 'Emittance' not in sub.textures:
             # Vegetation subs have no emit map: approximate the shader's
@@ -321,7 +324,7 @@ def register():
     desc = azlmbr.asset.builder.AssetBuilderDesc()
     desc.name = 'NW CGF Builder'
     desc.busId = BUS_ID
-    desc.version = 25
+    desc.version = 30
     pats = []
     for pat in ('*.cgf', '*.cgfheap', '*.skin'):
         p = azlmbr.asset.builder.AssetBuilderPattern()

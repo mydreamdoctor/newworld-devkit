@@ -1,0 +1,100 @@
+# Copyright (c) Contributors to the Open 3D Engine Project.
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+"""Operation sandboxing to prevent runaway AI operations.
+
+Two limits apply to one API call (one outermost undo batch): the number of
+entities it may create (``MAX_ENTITIES_PER_CALL``) and how long it may run
+(``MAX_OPERATION_TIMEOUT_SECONDS``). The sandbox also records every entity
+the call creates so rollback can delete what the editor's Undo leaves behind."""
+
+import time
+from typing import Optional
+
+# Configurable limits
+MAX_ENTITIES_PER_CALL = 100
+MAX_OPERATION_TIMEOUT_SECONDS = 30.0
+
+
+class SandboxLimitError(Exception):
+    """Raised when an operation exceeds sandbox limits."""
+    pass
+
+
+class OperationSandbox:
+    """Tracks and enforces limits on AI-driven operations within a single API call."""
+
+    def __init__(
+        self,
+        max_entities: int = MAX_ENTITIES_PER_CALL,
+        timeout: float = MAX_OPERATION_TIMEOUT_SECONDS,
+    ):
+        self._max_entities = max_entities
+        self._timeout = timeout
+        self._entities_created = 0
+        self._start_time: Optional[float] = None
+        self._created_ids: list = []
+
+    def begin(self):
+        """Start tracking an operation."""
+        self._entities_created = 0
+        self._start_time = time.monotonic()
+        self._created_ids = []
+
+    def record_entity(self, entity_id) -> None:
+        """Remember an entity this operation created, so rollback can delete it
+        if the editor's Undo leaves it behind."""
+        self._created_ids.append(entity_id)
+
+    @property
+    def created_entity_ids(self) -> list:
+        return list(self._created_ids)
+
+    def check_entity_limit(self, count: int = 1):
+        """Check if creating `count` more entities would exceed the limit."""
+        if self._entities_created + count > self._max_entities:
+            raise SandboxLimitError(
+                f"Entity creation limit exceeded: would create "
+                f"{self._entities_created + count} entities "
+                f"(limit: {self._max_entities})"
+            )
+        self._entities_created += count
+
+    def check_timeout(self):
+        """Check if the operation has exceeded the timeout."""
+        if self._start_time is not None:
+            elapsed = time.monotonic() - self._start_time
+            if elapsed > self._timeout:
+                raise SandboxLimitError(
+                    f"Operation timeout exceeded: {elapsed:.1f}s "
+                    f"(limit: {self._timeout}s)"
+                )
+
+    @property
+    def entities_created(self) -> int:
+        return self._entities_created
+
+    @property
+    def elapsed_time(self) -> float:
+        if self._start_time is None:
+            return 0.0
+        return time.monotonic() - self._start_time
+
+
+# Global sandbox instance for the current operation
+_current_sandbox: Optional[OperationSandbox] = None
+
+
+def get_sandbox() -> OperationSandbox:
+    """Get the current operation sandbox, creating one if needed."""
+    global _current_sandbox
+    if _current_sandbox is None:
+        _current_sandbox = OperationSandbox()
+    return _current_sandbox
+
+
+def reset_sandbox():
+    """Reset the global sandbox for a new operation."""
+    global _current_sandbox
+    _current_sandbox = OperationSandbox()
+    _current_sandbox.begin()

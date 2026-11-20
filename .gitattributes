@@ -1,7 +1,6 @@
 
 #
 # Git LFS (see https://git-lfs.github.com/)
-#
 *.3ds filter=lfs diff=lfs merge=lfs -text
 *.DLL filter=lfs diff=lfs merge=lfs -text
 *.FBX filter=lfs diff=lfs merge=lfs -text
@@ -125,3 +124,4 @@ Gems/AtomLyIntegration/CommonFeatures/Assets/Objects/Lucy/Lucy_low.fbx filter=lf
 Gems/AtomLyIntegration/CommonFeatures/Assets/Objects/Lucy/.wip/marmoset_bake.tbscene filter=lfs diff=lfs merge=lfs -text
 Gems/AtomLyIntegration/CommonFeatures/Assets/Objects/Lucy/.wip/Brass/brass_bake.spp filter=lfs diff=lfs merge=lfs -text
 Gems/AtomLyIntegration/CommonFeatures/Assets/Objects/Lucy/.wip/stone/stone_bake.spp filter=lfs diff=lfs merge=lfs -text
+Gems/AiCompanion/Tests/live/fixtures/AiCompanionSample.animgraph !text !filter !merge !diff

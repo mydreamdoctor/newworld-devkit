@@ -1,0 +1,1169 @@
+/*
+ * Copyright (c) Contributors to the Open 3D Engine Project.
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ */
+
+#include "AiCompanionEditorSystemComponent.h"
+
+#include "AgentMode/AgentModeFilter.h"
+#include "AgentMode/AgentModeState.h"
+#include "Animation/AnimGraphAuthoring.h"
+#include "Animation/AnimGraphInspector.h"
+#include "Assets/AssetReadiness.h"
+#include "Components/ComponentState.h"
+#include "Introspection/BusSchema.h"
+#include "Network/RequestError.h"
+#include "Snapshot/SceneSnapshotProvider.h"
+
+#include "Validation/InputValidator.h"
+#include <AzCore/Component/ComponentApplicationBus.h>
+#include <AzCore/Component/Entity.h>
+#include <AzCore/IO/Path/Path.h>
+#include <AzCore/RTTI/BehaviorContext.h>
+#include <AzCore/Serialization/EditContext.h>
+#include <AzCore/Serialization/SerializeContext.h>
+#include <AzCore/Settings/SettingsRegistryMergeUtils.h>
+#include <AzCore/Utils/Utils.h>
+#include <AzCore/std/optional.h>
+#include <AzFramework/API/ApplicationAPI.h>
+#include <AzFramework/Asset/AssetSystemBus.h>
+
+#include <AzCore/Component/NonUniformScaleBus.h>
+#include <AzCore/Component/TransformBus.h>
+#include <AzCore/Math/Quaternion.h>
+#include <AzCore/Math/Transform.h>
+#include <AzToolsFramework/API/EditorAssetSystemAPI.h>
+#include <AzToolsFramework/API/EditorPythonRunnerRequestsBus.h>
+#include <AzToolsFramework/API/EntityCompositionRequestBus.h>
+#include <AzToolsFramework/API/ToolsApplicationAPI.h>
+#include <AzToolsFramework/Entity/EditorEntityAPIBus.h>
+#include <AzToolsFramework/Entity/EditorEntityHelpers.h>
+#include <AzToolsFramework/Prefab/PrefabPublicInterface.h>
+#include <AzToolsFramework/PropertyTreeEditor/PropertyTreeEditor.h>
+#include <AzToolsFramework/ToolsComponents/EditorDisabledCompositionBus.h>
+#include <AzToolsFramework/ToolsComponents/EditorPendingCompositionBus.h>
+#include <AzToolsFramework/ToolsComponents/GenericComponentWrapper.h>
+#include <AzToolsFramework/ToolsComponents/TransformComponent.h>
+
+#include <QApplication>
+#include <QTimer>
+
+#include <cstdlib>
+
+namespace AiCompanion
+{
+    void AiCompanionEditorSystemComponent::Reflect(AZ::ReflectContext* context)
+    {
+        // The editor module registers only this component, so the base class's
+        // reflection (including AiCompanionRequestBus for Python) has to be
+        // invoked from here or azlmbr.ai_companion never exists in the editor.
+        AiCompanionSystemComponent::Reflect(context);
+
+        if (auto* serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
+        {
+            serializeContext->Class<AiCompanionEditorSystemComponent, AZ::Component>()->Version(1);
+
+            if (AZ::EditContext* editContext = serializeContext->GetEditContext())
+            {
+                editContext
+                    ->Class<AiCompanionEditorSystemComponent>(
+                        "AiCompanion Editor",
+                        "Editor-side AI Companion component that registers Python API paths and provides editor-specific functionality.")
+                    ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
+                    ->Attribute(AZ::Edit::Attributes::AppearsInAddComponentMenu, AZ_CRC("System"))
+                    ->Attribute(AZ::Edit::Attributes::AutoExpand, true);
+            }
+        }
+
+        if (auto* behaviorContext = azrtti_cast<AZ::BehaviorContext*>(context))
+        {
+            behaviorContext->EBus<AiCompanionEditorRequestBus>("AiCompanionEditorRequestBus")
+                ->Attribute(AZ::Script::Attributes::Scope, AZ::Script::Attributes::ScopeFlags::Automation)
+                ->Attribute(AZ::Script::Attributes::Category, "AiCompanion")
+                ->Attribute(AZ::Script::Attributes::Module, "editor")
+                ->Attribute(AZ::Script::Attributes::ExcludeFrom, AZ::Script::Attributes::ExcludeFlags::All)
+                ->Event("SetComponentPropertyUnwrapped", &AiCompanionEditorRequestBus::Events::SetComponentPropertyUnwrapped)
+                ->Event("GetComponentState", &AiCompanionEditorRequestBus::Events::GetComponentState)
+                ->Event("CommitEntityToPrefab", &AiCompanionEditorRequestBus::Events::CommitEntityToPrefab)
+                ->Event(
+                    "SetScale",
+                    &AiCompanionEditorRequestBus::Events::SetScale,
+                    { { { "entityId", "The entity to scale." },
+                        { "scale",
+                          "The effective local scale: equal elements set the Transform's uniform scale, unequal ones add or "
+                          "update the Non-uniform Scale component." } } })
+                ->Event(
+                    "GetBusSchema",
+                    &AiCompanionEditorRequestBus::Events::GetBusSchema,
+                    { { { "busName", "Reflected bus name to describe, e.g. 'DioramaSpriteRequestBus'. Empty lists all bus names." } } })
+                ->Event("ListAnimGraphs", &AiCompanionEditorRequestBus::Events::ListAnimGraphs)
+                ->Event(
+                    "GetAnimGraph",
+                    &AiCompanionEditorRequestBus::Events::GetAnimGraph,
+                    { { { "selector", "The anim graph's decimal id, or its file name (exact, or the file name's tail)." } } })
+                ->Event("CreateAnimGraph", &AiCompanionEditorRequestBus::Events::CreateAnimGraph)
+                ->Event(
+                    "RemoveAnimGraph",
+                    &AiCompanionEditorRequestBus::Events::RemoveAnimGraph,
+                    { { { "animGraphId", "The anim graph's id as reported by ListAnimGraphs." } } })
+                ->Event(
+                    "LoadAnimGraph",
+                    &AiCompanionEditorRequestBus::Events::LoadAnimGraph,
+                    { { { "fileName", "An .animgraph path: absolute, @alias@, or relative to the project root." } } })
+                ->Event(
+                    "SaveAnimGraph",
+                    &AiCompanionEditorRequestBus::Events::SaveAnimGraph,
+                    { { { "animGraphId", "The anim graph's id." },
+                        { "fileName", "The target path inside the project root; empty saves to the graph's own file name." } } })
+                ->Event(
+                    "AddAnimGraphNode",
+                    &AiCompanionEditorRequestBus::Events::AddAnimGraphNode,
+                    { { { "animGraphId", "The anim graph's id." },
+                        { "argumentsJson", "A JSON object: node_type, and optional parent_id, name, position [x, y]." } } })
+                ->Event(
+                    "RemoveAnimGraphNode",
+                    &AiCompanionEditorRequestBus::Events::RemoveAnimGraphNode,
+                    { { { "animGraphId", "The anim graph's id." }, { "nodeId", "The node's id as GetAnimGraph reports it." } } })
+                ->Event(
+                    "SetAnimGraphEntryState",
+                    &AiCompanionEditorRequestBus::Events::SetAnimGraphEntryState,
+                    { { { "animGraphId", "The anim graph's id." }, { "nodeId", "The id of a state inside a state machine." } } })
+                ->Event(
+                    "AddAnimGraphParameter",
+                    &AiCompanionEditorRequestBus::Events::AddAnimGraphParameter,
+                    { { { "animGraphId", "The anim graph's id." },
+                        { "argumentsJson", "A JSON object: name, parameter_type, and optional default, min, max, description, group." } } })
+                ->Event(
+                    "RemoveAnimGraphParameter",
+                    &AiCompanionEditorRequestBus::Events::RemoveAnimGraphParameter,
+                    { { { "animGraphId", "The anim graph's id." }, { "name", "The value parameter's name." } } })
+                ->Event(
+                    "AddAnimGraphTransition",
+                    &AiCompanionEditorRequestBus::Events::AddAnimGraphTransition,
+                    { { { "animGraphId", "The anim graph's id." },
+                        { "argumentsJson",
+                          "A JSON object: target_node_id, and optional source_node_id (null for a wildcard), blend_time, priority, "
+                          "conditions [{condition_type, attributes}]." } } })
+                ->Event(
+                    "RemoveAnimGraphTransition",
+                    &AiCompanionEditorRequestBus::Events::RemoveAnimGraphTransition,
+                    { { { "animGraphId", "The anim graph's id." },
+                        { "transitionId", "The transition's id as GetAnimGraph reports it." } } })
+                ->Event(
+                    "SetAnimGraphTransition",
+                    &AiCompanionEditorRequestBus::Events::SetAnimGraphTransition,
+                    { { { "animGraphId", "The anim graph's id." },
+                        { "argumentsJson",
+                          "A JSON object: transition_id, and any of blend_time, priority, disabled, sync_mode, interpolation." } } })
+                ->Event(
+                    "ConnectAnimGraphPorts",
+                    &AiCompanionEditorRequestBus::Events::ConnectAnimGraphPorts,
+                    { { { "animGraphId", "The anim graph's id." },
+                        { "argumentsJson", "A JSON object: source_node_id, source_port, target_node_id, target_port (index or name)." } } })
+                ->Event(
+                    "DisconnectAnimGraphPorts",
+                    &AiCompanionEditorRequestBus::Events::DisconnectAnimGraphPorts,
+                    { { { "animGraphId", "The anim graph's id." },
+                        { "argumentsJson", "A JSON object: target_node_id, target_port (index or name)." } } })
+                ->Event(
+                    "SetAnimGraphNode",
+                    &AiCompanionEditorRequestBus::Events::SetAnimGraphNode,
+                    { { { "animGraphId", "The anim graph's id." },
+                        { "argumentsJson",
+                          "A JSON object: node_id, and any of name, position [x, y], enabled, attributes {field: value}." } } })
+                ->Event(
+                    "GetAssetStatus",
+                    &AiCompanionEditorRequestBus::Events::GetAssetStatus,
+                    { { { "path", "A source relative path, a product relative path, or a full path to either." },
+                        { "flushIo", "Flush the Asset Processor's file change queue first; use once, right after writing the file." } } })
+                ->Event(
+                    "GetAssetJobs",
+                    &AiCompanionEditorRequestBus::Events::GetAssetJobs,
+                    { { { "sourcePath", "The source file: relative to its scan folder, or a full path." },
+                        { "escalate", "Move the file's queued jobs to the front of the build queue." },
+                        { "includeLogs", "Attach each failed job's log, cut at 64 KB." } } })
+                ->Event("GetAssetProcessorStatus", &AiCompanionEditorRequestBus::Events::GetAssetProcessorStatus);
+        }
+    }
+
+    void AiCompanionEditorSystemComponent::GetProvidedServices(AZ::ComponentDescriptor::DependencyArrayType& provided)
+    {
+        AiCompanionSystemComponent::GetProvidedServices(provided);
+        provided.push_back(AZ_CRC("AiCompanionEditorService"));
+    }
+
+    void AiCompanionEditorSystemComponent::GetIncompatibleServices(AZ::ComponentDescriptor::DependencyArrayType& incompatible)
+    {
+        AiCompanionSystemComponent::GetIncompatibleServices(incompatible);
+        incompatible.push_back(AZ_CRC("AiCompanionEditorService"));
+    }
+
+    void AiCompanionEditorSystemComponent::GetRequiredServices([[maybe_unused]] AZ::ComponentDescriptor::DependencyArrayType& required)
+    {
+    }
+
+    void AiCompanionEditorSystemComponent::GetDependentServices([[maybe_unused]] AZ::ComponentDescriptor::DependencyArrayType& dependent)
+    {
+    }
+
+    void AiCompanionEditorSystemComponent::Activate()
+    {
+        AiCompanionSystemComponent::Activate();
+        AzToolsFramework::EditorEvents::Bus::Handler::BusConnect();
+        AZ::SystemTickBus::Handler::BusConnect();
+        AiCompanionEditorRequestBus::Handler::BusConnect();
+        RegisterPythonPaths();
+        StartAgentServer();
+        StartQueuePump();
+
+        m_lastAgentModePoll = std::chrono::steady_clock::now();
+        RefreshAgentMode();
+    }
+
+    void AiCompanionEditorSystemComponent::Deactivate()
+    {
+        if (m_queuePumpTimer)
+        {
+            m_queuePumpTimer->stop();
+            m_queuePumpTimer->deleteLater();
+            m_queuePumpTimer = nullptr;
+        }
+
+        if (m_agentModeFilter)
+        {
+            if (QApplication* app = qApp)
+            {
+                app->removeEventFilter(m_agentModeFilter.get());
+            }
+            m_agentModeFilter.reset();
+        }
+
+        if (m_agentServer)
+        {
+            m_agentServer->Stop();
+            m_agentServer.reset();
+        }
+
+        AiCompanionEditorRequestBus::Handler::BusDisconnect();
+        AZ::SystemTickBus::Handler::BusDisconnect();
+        AzToolsFramework::EditorEvents::Bus::Handler::BusDisconnect();
+        AiCompanionSystemComponent::Deactivate();
+    }
+
+    void AiCompanionEditorSystemComponent::OnSystemTick()
+    {
+        // Also drain here so the queue is serviced whenever the editor IS
+        // ticking; the Qt timer in StartQueuePump() covers the unfocused case
+        // when this tick is throttled. Draining twice is harmless (the queue
+        // swap is mutex-guarded and a second call just finds it empty).
+        if (m_agentServer)
+        {
+            m_agentServer->ProcessMainThreadQueue();
+        }
+
+        // Re-read the agent-mode state file at most once per second. The file
+        // is tiny (~120 bytes) and a missing file is a cheap fast-path.
+        const auto now = std::chrono::steady_clock::now();
+        if (now - m_lastAgentModePoll >= std::chrono::seconds(1))
+        {
+            m_lastAgentModePoll = now;
+            RefreshAgentMode();
+        }
+    }
+
+    void AiCompanionEditorSystemComponent::RefreshAgentMode()
+    {
+        AgentMode::State current;
+        AgentMode::LoadState(current);
+
+        const bool wantsFilter = current.enabled && current.suppressDialogs;
+        const bool hasFilter = m_agentModeFilter != nullptr;
+
+        if (wantsFilter && !hasFilter)
+        {
+            if (QApplication* app = qApp)
+            {
+                m_agentModeFilter = AZStd::make_unique<AgentMode::Filter>();
+                app->installEventFilter(m_agentModeFilter.get());
+                AZ_Printf("AiCompanion", "[AgentMode] Enabled; event filter installed on qApp.\n");
+            }
+        }
+        else if (!wantsFilter && hasFilter)
+        {
+            if (QApplication* app = qApp)
+            {
+                app->removeEventFilter(m_agentModeFilter.get());
+            }
+            m_agentModeFilter.reset();
+            AZ_Printf("AiCompanion", "[AgentMode] Disabled; event filter removed.\n");
+        }
+
+        m_cachedAgentMode = current;
+        // Mirror the applied state into the observed-state file so external
+        // tooling can verify the C++ side has caught up after an input-file
+        // change. AZ_Printf from OnSystemTick is not reliable post-init, so
+        // this file is the sanctioned introspection path.
+        AgentMode::WriteObservedState(current, m_agentModeFilter != nullptr);
+    }
+
+    void AiCompanionEditorSystemComponent::RegisterPythonPaths()
+    {
+        // Resolve the Gem's root directory and add Editor/Scripts/ to Python sys.path
+        // so that `import ai_companion` works from EditorPythonBindings.
+        AZ::IO::FixedMaxPath gemRoot;
+        if (auto* settingsRegistry = AZ::SettingsRegistry::Get())
+        {
+            // Look up the Gem's source path from the settings registry
+            AZStd::string gemPath;
+            const auto gemKey = AZStd::string::format("/O3DE/Gems/AiCompanion/SourcePaths/0");
+            if (settingsRegistry->Get(gemPath, gemKey))
+            {
+                gemRoot = AZ::IO::FixedMaxPath(gemPath.c_str());
+            }
+        }
+
+        if (gemRoot.empty())
+        {
+            AZ_Warning(
+                "AiCompanion",
+                false,
+                "Could not resolve AiCompanion Gem root path. "
+                "The ai_companion Python package may not be importable.");
+            return;
+        }
+
+        AZ::IO::FixedMaxPath scriptsPath = gemRoot / "Editor" / "Scripts";
+
+        // Add to Python sys.path via EditorPythonBindings
+        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
+            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
+            AZStd::string::format(
+                "import sys; path = r'%s'; "
+                "sys.path.insert(0, path) if path not in sys.path else None",
+                scriptsPath.c_str())
+                .c_str(),
+            false);
+
+        AZ_TracePrintf("AiCompanion", "Registered Python path: %s\n", scriptsPath.c_str());
+    }
+    void AiCompanionEditorSystemComponent::StartAgentServer()
+    {
+        // Resolve configuration: env var > settings registry > default
+        bool enabled = true;
+        AZStd::string host = "127.0.0.1";
+        AZ::s64 portValue = 4600;
+        bool secureMode = false;
+        bool tlsEnabled = false;
+        AZStd::string tlsCertPath;
+        AZStd::string tlsKeyPath;
+        AZStd::string logLevelStr = "minimal";
+
+        if (auto* sr = AZ::SettingsRegistry::Get())
+        {
+            sr->Get(enabled, "/O3DE/AiCompanion/AgentServer/Enabled");
+            sr->Get(host, "/O3DE/AiCompanion/AgentServer/Host");
+            sr->Get(portValue, "/O3DE/AiCompanion/AgentServer/Port");
+            sr->Get(secureMode, "/O3DE/AiCompanion/AgentServer/SecureMode");
+            sr->Get(tlsEnabled, "/O3DE/AiCompanion/AgentServer/TlsEnabled");
+            sr->Get(tlsCertPath, "/O3DE/AiCompanion/AgentServer/TlsCertPath");
+            sr->Get(tlsKeyPath, "/O3DE/AiCompanion/AgentServer/TlsKeyPath");
+            sr->Get(logLevelStr, "/O3DE/AiCompanion/AgentServer/LogLevel");
+        }
+
+        // Environment variable overrides (highest priority)
+        auto readEnv = [](const char* name) -> AZStd::string
+        {
+            char buffer[4096];
+            auto outcome = AZ::Utils::GetEnv(buffer, name);
+            return outcome.IsSuccess() ? AZStd::string(outcome.GetValue()) : AZStd::string();
+        };
+
+        if (auto val = readEnv("AI_COMPANION_SERVER_ENABLED"); !val.empty())
+        {
+            enabled = (val != "0" && val != "false");
+        }
+        if (auto val = readEnv("AI_COMPANION_SERVER_HOST"); !val.empty())
+        {
+            host = val;
+        }
+        if (auto val = readEnv("O3DE_EDITOR_PORT"); !val.empty())
+        {
+            portValue = std::atoi(val.c_str());
+        }
+        if (auto val = readEnv("AI_COMPANION_SECURE_MODE"); !val.empty())
+        {
+            secureMode = (val == "1" || val == "true");
+        }
+        if (auto val = readEnv("AI_COMPANION_TLS_ENABLED"); !val.empty())
+        {
+            tlsEnabled = (val == "1" || val == "true");
+        }
+        if (auto val = readEnv("AI_COMPANION_TLS_CERT"); !val.empty())
+        {
+            tlsCertPath = val;
+        }
+        if (auto val = readEnv("AI_COMPANION_TLS_KEY"); !val.empty())
+        {
+            tlsKeyPath = val;
+        }
+        if (auto val = readEnv("AI_COMPANION_LOG_LEVEL"); !val.empty())
+        {
+            logLevelStr = val;
+        }
+
+        if (!enabled)
+        {
+            AZ_Printf("AiCompanion", "[AgentServer] Disabled by configuration\n");
+            return;
+        }
+
+        // Warn if binding to non-loopback
+        if (host != "127.0.0.1" && host != "::1" && host != "localhost")
+        {
+            AZ_Warning(
+                "AiCompanion",
+                false,
+                "AgentServer binding to %s: this exposes the server to the network. "
+                "Best practices: enable TLS (set TlsEnabled=true with cert/key paths), "
+                "use a firewall, restrict to trusted networks, consider SSH tunneling, "
+                "or enable secure mode to disable execute_python.",
+                host.c_str());
+        }
+
+        // Parse log level
+        AgentServerLogLevel logLevel = AgentServerLogLevel::Minimal;
+        if (logLevelStr == "standard")
+        {
+            logLevel = AgentServerLogLevel::Standard;
+        }
+        else if (logLevelStr == "verbose")
+        {
+            logLevel = AgentServerLogLevel::Verbose;
+        }
+
+        AZ::u16 port = static_cast<AZ::u16>(portValue);
+
+        // Determine TLS cert/key paths
+        AZStd::string certPath;
+        AZStd::string keyPath;
+        if (tlsEnabled)
+        {
+            certPath = tlsCertPath;
+            keyPath = tlsKeyPath;
+            if (certPath.empty() || keyPath.empty())
+            {
+                AZ_Warning("AiCompanion", false, "[AgentServer] TLS enabled but cert/key paths not configured. Starting without TLS.");
+                certPath.clear();
+                keyPath.clear();
+            }
+        }
+
+        m_agentServer = AZStd::make_unique<AgentServer>();
+        if (!m_agentServer->Start(host, port, secureMode, logLevel, certPath, keyPath))
+        {
+            AZ_Error("AiCompanion", false, "[AgentServer] Failed to start on %s:%u", host.c_str(), port);
+            m_agentServer.reset();
+        }
+    }
+
+    void AiCompanionEditorSystemComponent::StartQueuePump()
+    {
+        if (!m_agentServer || m_queuePumpTimer)
+        {
+            return;
+        }
+
+        QApplication* app = qApp;
+        if (app == nullptr)
+        {
+            // No Qt application (e.g., a non-GUI host); OnSystemTick remains the
+            // only pump. That path is fine when something keeps ticking the bus.
+            return;
+        }
+
+        // Parent to qApp so the timer lives on (and is driven by) the main-thread
+        // Qt event loop, which keeps firing timers even while the editor window
+        // is not the foreground app. 8 ms (~125 Hz) keeps request latency well
+        // under the client's read timeout at negligible cost (an empty-queue
+        // swap when idle). Precise so background throttling cannot stretch it.
+        m_queuePumpTimer = new QTimer(app);
+        m_queuePumpTimer->setTimerType(Qt::PreciseTimer);
+        m_queuePumpTimer->setInterval(8);
+        QObject::connect(
+            m_queuePumpTimer,
+            &QTimer::timeout,
+            m_queuePumpTimer,
+            [this]()
+            {
+                if (m_agentServer)
+                {
+                    m_agentServer->ProcessMainThreadQueue();
+                }
+            });
+        m_queuePumpTimer->start();
+
+        AZ_Printf("AiCompanion", "[AgentServer] Main-thread queue pump started (8 ms, focus-independent).\n");
+    }
+
+    AZ::Outcome<void, AZStd::string> AiCompanionEditorSystemComponent::SetComponentPropertyUnwrapped(
+        AZ::EntityComponentIdPair pair, AZStd::string propertyPath, AZStd::any value)
+    {
+        AZ::Entity* entity = nullptr;
+        AZ::ComponentApplicationBus::BroadcastResult(entity, &AZ::ComponentApplicationRequests::FindEntity, pair.GetEntityId());
+        if (entity == nullptr)
+        {
+            return AZ::Failure(AZStd::string("entity not found"));
+        }
+
+        AZ::Component* component = entity->FindComponent(pair.GetComponentId());
+        if (component == nullptr)
+        {
+            return AZ::Failure(AZStd::string("component not found on entity"));
+        }
+
+        // Unwrap GenericComponentWrapper so PropertyTreeEditor's (instance,
+        // type) pair is internally consistent. See AiCompanionEditorRequestBus.h
+        // for rationale; mirrors o3de/o3de#19771 locally pending merge.
+        void* instance = reinterpret_cast<void*>(component);
+        if (auto* wrapper = azrtti_cast<AzToolsFramework::Components::GenericComponentWrapper*>(component))
+        {
+            if (AZ::Component* tmpl = wrapper->GetTemplate())
+            {
+                instance = reinterpret_cast<void*>(tmpl);
+            }
+        }
+
+        AzToolsFramework::PropertyTreeEditor pte(instance, component->GetUnderlyingComponentType());
+        const auto outcome = pte.SetProperty(propertyPath, value);
+        if (!outcome.IsSuccess())
+        {
+            return AZ::Failure(outcome.GetError());
+        }
+        return AZ::Success();
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::GetComponentState(AZ::EntityComponentIdPair pair)
+    {
+        AZ::Entity* entity = nullptr;
+        AZ::ComponentApplicationBus::BroadcastResult(entity, &AZ::ComponentApplicationRequests::FindEntity, pair.GetEntityId());
+        if (entity == nullptr)
+        {
+            return AZ::Failure(AZStd::string("entity not found"));
+        }
+
+        // Entity::FindComponent sees only the active list; a pending or
+        // disabled component lives on the entity's composition components.
+        AZ::Entity::ComponentArrayType allComponents;
+        AzToolsFramework::GetAllComponentsForEntity(entity, allComponents);
+        AZ::Component* component = nullptr;
+        for (AZ::Component* candidate : allComponents)
+        {
+            if (candidate != nullptr && candidate->GetId() == pair.GetComponentId())
+            {
+                component = candidate;
+                break;
+            }
+        }
+        if (component == nullptr)
+        {
+            return AZ::Failure(AZStd::string("component not found on entity"));
+        }
+
+        const AZ::Entity::ComponentArrayType& activeComponents = entity->GetComponents();
+        const bool active = AZStd::find(activeComponents.begin(), activeComponents.end(), component) != activeComponents.end();
+        bool pending = false;
+        AzToolsFramework::EditorPendingCompositionRequestBus::EventResult(
+            pending, entity->GetId(), &AzToolsFramework::EditorPendingCompositionRequests::IsComponentPending, component);
+        bool disabled = false;
+        AzToolsFramework::EditorDisabledCompositionRequestBus::EventResult(
+            disabled, entity->GetId(), &AzToolsFramework::EditorDisabledCompositionRequests::IsComponentDisabled, component);
+
+        ComponentState::Info info;
+        info.m_name = AzToolsFramework::GetFriendlyComponentName(component);
+        info.m_state = ComponentState::StateWord(active, pending, disabled);
+
+        if (pending)
+        {
+            // The same query the Entity Inspector's "disabled because it is
+            // incompatible with ..." notice is built from.
+            AzToolsFramework::EntityCompositionRequests::PendingComponentInfo pendingInfo;
+            AzToolsFramework::EntityCompositionRequestBus::BroadcastResult(
+                pendingInfo, &AzToolsFramework::EntityCompositionRequests::GetPendingComponentInfo, component);
+            for (const AZ::Component* sibling : pendingInfo.m_validComponentsThatAreIncompatible)
+            {
+                info.m_incompatibleWith.push_back(AzToolsFramework::GetFriendlyComponentName(sibling));
+            }
+            for (const AZ::Component* provider : pendingInfo.m_pendingComponentsWithRequiredServices)
+            {
+                info.m_waitingOnPending.push_back(AzToolsFramework::GetFriendlyComponentName(provider));
+            }
+            for (const AZ::ComponentServiceType& service : pendingInfo.m_missingRequiredServices)
+            {
+                info.m_missingRequiredServices.push_back(ComponentState::ServiceCrcWord(static_cast<AZ::u32>(service)));
+            }
+            for (const AZ::ComponentServiceType& service : pendingInfo.m_incompatibleServices)
+            {
+                info.m_incompatibleServices.push_back(ComponentState::ServiceCrcWord(static_cast<AZ::u32>(service)));
+            }
+            for (const AZStd::string& warning : pendingInfo.m_warnings)
+            {
+                info.m_warnings.push_back(warning);
+            }
+        }
+
+        return AZ::Success(ComponentState::BuildComponentStateJson(info));
+    }
+
+    AZStd::string AiCompanionEditorSystemComponent::GetBusSchema(AZStd::string busName)
+    {
+        AZ::BehaviorContext* behaviorContext = nullptr;
+        AZ::ComponentApplicationBus::BroadcastResult(behaviorContext, &AZ::ComponentApplicationRequests::GetBehaviorContext);
+        return BuildBusSchemaJson(behaviorContext, busName);
+    }
+
+    namespace
+    {
+        bool EntityExists(AZ::EntityId id)
+        {
+            bool exists = false;
+            AzToolsFramework::ToolsApplicationRequestBus::BroadcastResult(
+                exists, &AzToolsFramework::ToolsApplicationRequests::EntityExists, id);
+            return exists;
+        }
+
+        bool IsLevelRoot(AZ::EntityId id)
+        {
+            AZ::EntityId levelRoot;
+            AzToolsFramework::ToolsApplicationRequestBus::BroadcastResult(
+                levelRoot, &AzToolsFramework::ToolsApplicationRequests::GetCurrentLevelEntityId);
+            return levelRoot.IsValid() && levelRoot == id;
+        }
+
+        //! The entity's name as the component application knows it, empty when
+        //! the entity is unknown there.
+        AZStd::string EntityName(AZ::EntityId id)
+        {
+            AZStd::string name;
+            AZ::ComponentApplicationBus::BroadcastResult(name, &AZ::ComponentApplicationRequests::GetEntityName, id);
+            return name;
+        }
+
+        //! A validation_failed failure for a protected system entity, or an empty
+        //! optional when the entity may be modified. The message is the same
+        //! "entity is protected" the Python package answers.
+        AZStd::optional<AZStd::string> RefuseProtectedEntity(AZ::EntityId id)
+        {
+            const AZStd::string name = EntityName(id);
+            if (!InputValidator::IsProtectedEntityName(name))
+            {
+                return AZStd::nullopt;
+            }
+            return RequestError::EncodeError(
+                RequestError::ValidationFailed, AZStd::string::format("entity is protected: '%s'", name.c_str()));
+        }
+
+        AZStd::string FormatVector3(const AZ::Vector3& v)
+        {
+            return AZStd::string::format("[%g, %g, %g]", v.GetX(), v.GetY(), v.GetZ());
+        }
+
+        //! The scale the entity reports now: the Transform's uniform scale times
+        //! the Non-uniform Scale component's value when a handler is connected.
+        AZ::Vector3 ReadEffectiveScale(AZ::EntityId id)
+        {
+            float uniformScale = 1.0f;
+            AZ::TransformBus::EventResult(uniformScale, id, &AZ::TransformBus::Events::GetLocalUniformScale);
+            AZStd::optional<AZ::Vector3> nonUniformScale;
+            if (AZ::NonUniformScaleRequestBus::HasHandlers(id))
+            {
+                AZ::Vector3 value = AZ::Vector3::CreateOne();
+                AZ::NonUniformScaleRequestBus::EventResult(value, id, &AZ::NonUniformScaleRequestBus::Events::GetScale);
+                nonUniformScale = value;
+            }
+            return SceneSnapshotProvider::EffectiveScale(uniformScale, nonUniformScale);
+        }
+
+        //! Applies an effective local scale inside the caller's undo batch; see
+        //! AiCompanionEditorRequests::SetScale for the rules. Failures are
+        //! RequestError-encoded.
+        AZ::Outcome<void, AZStd::string> ApplyScale(AZ::EntityId id, const AZ::Vector3& scale)
+        {
+            if (!InputValidator::IsValidScale(scale.GetX(), scale.GetY(), scale.GetZ()))
+            {
+                return AZ::Failure(RequestError::EncodeError(
+                    RequestError::ValidationFailed,
+                    AZStd::string::format("scale must be in (0, %g] on every axis", InputValidator::MaxScale)));
+            }
+            const bool uniform = InputValidator::IsUniformScale(scale.GetX(), scale.GetY(), scale.GetZ());
+            if (!uniform && scale.GetMinElement() < AZ::MinTransformScale)
+            {
+                return AZ::Failure(RequestError::EncodeError(
+                    RequestError::ValidationFailed,
+                    AZStd::string::format(
+                        "a non-uniform scale element must be at least %g: the Non-uniform Scale component clamps smaller values",
+                        AZ::MinTransformScale)));
+            }
+
+            if (uniform)
+            {
+                AZ::TransformBus::Event(id, &AZ::TransformBus::Events::SetLocalUniformScale, scale.GetX());
+                if (AZ::NonUniformScaleRequestBus::HasHandlers(id))
+                {
+                    AZ::NonUniformScaleRequestBus::Event(id, &AZ::NonUniformScaleRequestBus::Events::SetScale, AZ::Vector3::CreateOne());
+                }
+            }
+            else
+            {
+                AZ::Entity* entity = nullptr;
+                AZ::ComponentApplicationBus::BroadcastResult(entity, &AZ::ComponentApplicationRequests::FindEntity, id);
+                auto* transform = entity ? entity->FindComponent<AzToolsFramework::Components::TransformComponent>() : nullptr;
+                if (!transform)
+                {
+                    return AZ::Failure(
+                        RequestError::EncodeError(RequestError::EngineError, "the entity has no editor Transform component"));
+                }
+                // The same call the Transform component's "Add non-uniform scale"
+                // button makes: adds EditorNonUniformScaleComponent through
+                // EntityCompositionRequestBus when it is missing (so the add is
+                // in the undo batch), then sets its value on the bus. The
+                // uniform scale is touched only once that has worked.
+                if (!transform->AddNonUniformScaleComponent(scale))
+                {
+                    return AZ::Failure(
+                        RequestError::EncodeError(RequestError::EngineError, "the editor did not add the Non-uniform Scale component"));
+                }
+                AZ::TransformBus::Event(id, &AZ::TransformBus::Events::SetLocalUniformScale, 1.0f);
+            }
+
+            const AZ::Vector3 applied = ReadEffectiveScale(id);
+            if (!applied.IsClose(scale, 1e-4f))
+            {
+                return AZ::Failure(RequestError::EncodeError(
+                    RequestError::EngineError,
+                    AZStd::string::format(
+                        "scale did not apply: got %s, asked %s", FormatVector3(applied).c_str(), FormatVector3(scale).c_str())));
+            }
+            return AZ::Success();
+        }
+    } // namespace
+
+    AZ::Outcome<AZ::u64, AZStd::string> AiCompanionEditorSystemComponent::CreateEntity(
+        AZStd::string name, AZ::Vector3 position, AZ::u64 parentId)
+    {
+        if (!InputValidator::IsValidEntityName(name))
+        {
+            return AZ::Failure(RequestError::EncodeError(
+                RequestError::ValidationFailed,
+                AZStd::string::format(
+                    "invalid entity name '%s' (letter first, then letters, digits, '_' or '-', at most %zu characters)",
+                    name.c_str(),
+                    InputValidator::MaxEntityNameLength)));
+        }
+        if (!InputValidator::IsValidPosition(position.GetX(), position.GetY(), position.GetZ()))
+        {
+            return AZ::Failure(RequestError::EncodeError(RequestError::ValidationFailed, "position out of bounds"));
+        }
+        // AZ::EntityId(0) is a valid-looking id that no entity has; the invalid id is
+        // all ones. An absent parent must be the default-constructed EntityId so the
+        // prefab system parents to the focused prefab's container.
+        AZ::EntityId parent = (parentId != 0) ? AZ::EntityId(parentId) : AZ::EntityId();
+        if (parentId != 0 && !EntityExists(parent))
+        {
+            return AZ::Failure(RequestError::EncodeError(
+                RequestError::NotFound,
+                AZStd::string::format("parent entity %llu does not exist", static_cast<unsigned long long>(parentId))));
+        }
+
+        // Call the prefab system directly. ToolsApplication::CreateNewEntityAtPosition
+        // routes through PrefabIntegrationManager, which turns any failure into a modal
+        // WarningDialog; on an unattended editor that blocks the main thread inside the
+        // dialog's event loop until someone clicks it. The interface returns the same
+        // failure as a value, which is what an agent needs.
+        auto* prefabInterface = AZ::Interface<AzToolsFramework::Prefab::PrefabPublicInterface>::Get();
+        if (!prefabInterface)
+        {
+            return AZ::Failure(RequestError::EncodeError(RequestError::Unavailable, "prefab system is not available"));
+        }
+        AzToolsFramework::ScopedUndoBatch undo("AiCompanion Create Entity");
+        auto createResult = prefabInterface->CreateEntity(parent, position);
+        if (!createResult.IsSuccess())
+        {
+            // The engine's own text, e.g. "no root prefab is assigned".
+            return AZ::Failure(RequestError::EncodeError(RequestError::EngineError, createResult.GetError()));
+        }
+        const AZ::EntityId created = createResult.GetValue();
+        if (!created.IsValid())
+        {
+            return AZ::Failure(RequestError::EncodeError(RequestError::EngineError, "the prefab system returned an invalid entity id"));
+        }
+        AzToolsFramework::EditorEntityAPIBus::Event(created, &AzToolsFramework::EditorEntityAPIRequests::SetName, name);
+        return AZ::Success(static_cast<AZ::u64>(created));
+    }
+
+    AZ::Outcome<void, AZStd::string> AiCompanionEditorSystemComponent::SetTransform(
+        AZ::u64 entityId,
+        bool setPosition,
+        AZ::Vector3 position,
+        bool setRotation,
+        AZ::Quaternion rotation,
+        bool setScale,
+        AZ::Vector3 scale)
+    {
+        AZ::EntityId id(entityId);
+        if (!EntityExists(id))
+        {
+            return AZ::Failure(RequestError::EncodeError(
+                RequestError::NotFound, AZStd::string::format("entity %llu does not exist", static_cast<unsigned long long>(entityId))));
+        }
+        if (auto refused = RefuseProtectedEntity(id))
+        {
+            return AZ::Failure(*refused);
+        }
+        if (setPosition && !InputValidator::IsValidPosition(position.GetX(), position.GetY(), position.GetZ()))
+        {
+            return AZ::Failure(RequestError::EncodeError(RequestError::ValidationFailed, "position out of bounds"));
+        }
+        if (setScale && !InputValidator::IsValidScale(scale.GetX(), scale.GetY(), scale.GetZ()))
+        {
+            return AZ::Failure(RequestError::EncodeError(
+                RequestError::ValidationFailed, AZStd::string::format("scale must be in (0, %g] on every axis", InputValidator::MaxScale)));
+        }
+        if (setRotation && !(rotation.GetLength() > 0.0f))
+        {
+            return AZ::Failure(RequestError::EncodeError(RequestError::ValidationFailed, "rotation quaternion must not be all zeros"));
+        }
+
+        AzToolsFramework::ScopedUndoBatch undo("AiCompanion Set Transform");
+        if (setPosition)
+        {
+            AZ::TransformBus::Event(id, &AZ::TransformBus::Events::SetWorldTranslation, position);
+        }
+        if (setRotation)
+        {
+            AZ::TransformBus::Event(id, &AZ::TransformBus::Events::SetWorldRotationQuaternion, rotation.GetNormalized());
+        }
+        if (setScale)
+        {
+            auto scaled = ApplyScale(id, scale);
+            if (!scaled.IsSuccess())
+            {
+                return scaled;
+            }
+        }
+        AzToolsFramework::ToolsApplicationRequestBus::Broadcast(&AzToolsFramework::ToolsApplicationRequests::AddDirtyEntity, id);
+        return AZ::Success();
+    }
+
+    AZ::Outcome<void, AZStd::string> AiCompanionEditorSystemComponent::SetScale(AZ::EntityId entityId, AZ::Vector3 scale)
+    {
+        if (!EntityExists(entityId))
+        {
+            return AZ::Failure(
+                AZStd::string::format("entity %llu does not exist", static_cast<unsigned long long>(static_cast<AZ::u64>(entityId))));
+        }
+        AzToolsFramework::ScopedUndoBatch undo("AiCompanion Set Scale");
+        auto scaled = ApplyScale(entityId, scale);
+        if (!scaled.IsSuccess())
+        {
+            // Called from editor Python, which reads the text, not the code.
+            AZStd::string code;
+            AZStd::string message;
+            RequestError::DecodeError(scaled.GetError(), code, message);
+            return AZ::Failure(message);
+        }
+        AzToolsFramework::ToolsApplicationRequestBus::Broadcast(&AzToolsFramework::ToolsApplicationRequests::AddDirtyEntity, entityId);
+        return AZ::Success();
+    }
+
+    AZ::Outcome<void, AZStd::string> AiCompanionEditorSystemComponent::CommitEntityToPrefab(AZ::EntityId entityId)
+    {
+        if (!EntityExists(entityId))
+        {
+            return AZ::Failure(
+                AZStd::string::format("entity %llu does not exist", static_cast<unsigned long long>(static_cast<AZ::u64>(entityId))));
+        }
+        auto* prefabInterface = AZ::Interface<AzToolsFramework::Prefab::PrefabPublicInterface>::Get();
+        if (!prefabInterface)
+        {
+            return AZ::Failure(AZStd::string("prefab system is not available"));
+        }
+        // The same call ToolsApplication::CreateUndosForDirtyEntities makes when
+        // the root undo batch ends; a nested batch gives it a sequence point to
+        // hang the node on without closing the caller's batch.
+        AzToolsFramework::ScopedUndoBatch batch("AiCompanion Commit Entity");
+        auto outcome = prefabInterface->GenerateUndoNodesForEntityChangeAndUpdateCache(entityId, batch.GetUndoBatch());
+        if (!outcome.IsSuccess())
+        {
+            return AZ::Failure(outcome.GetError());
+        }
+        return AZ::Success();
+    }
+
+    AZ::Outcome<void, AZStd::string> AiCompanionEditorSystemComponent::DeleteEntity(AZ::u64 entityId)
+    {
+        AZ::EntityId id(entityId);
+        if (!EntityExists(id))
+        {
+            return AZ::Failure(RequestError::EncodeError(
+                RequestError::NotFound, AZStd::string::format("entity %llu does not exist", static_cast<unsigned long long>(entityId))));
+        }
+        if (IsLevelRoot(id))
+        {
+            return AZ::Failure(RequestError::EncodeError(RequestError::ValidationFailed, "refusing to delete the level's root entity"));
+        }
+        if (auto refused = RefuseProtectedEntity(id))
+        {
+            return AZ::Failure(*refused);
+        }
+        AzToolsFramework::ScopedUndoBatch undo("AiCompanion Delete Entity");
+        AzToolsFramework::ToolsApplicationRequestBus::Broadcast(
+            &AzToolsFramework::ToolsApplicationRequests::DeleteEntityAndAllDescendants, id);
+        if (EntityExists(id))
+        {
+            return AZ::Failure(RequestError::EncodeError(RequestError::EngineError, "the editor did not delete the entity"));
+        }
+        return AZ::Success();
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::ListAnimGraphs()
+    {
+        return AnimGraphInspector::ListAnimGraphs();
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::GetAnimGraph(AZStd::string selector)
+    {
+        return AnimGraphInspector::DescribeAnimGraph(selector);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::CreateAnimGraph()
+    {
+        return AnimGraphAuthoring::CreateAnimGraph();
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::RemoveAnimGraph(AZ::u32 animGraphId)
+    {
+        return AnimGraphAuthoring::RemoveAnimGraph(animGraphId);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::LoadAnimGraph(AZStd::string fileName)
+    {
+        return AnimGraphAuthoring::LoadAnimGraph(fileName);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::SaveAnimGraph(AZ::u32 animGraphId, AZStd::string fileName)
+    {
+        return AnimGraphAuthoring::SaveAnimGraph(animGraphId, fileName);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::AddAnimGraphNode(
+        AZ::u32 animGraphId, AZStd::string argumentsJson)
+    {
+        return AnimGraphAuthoring::AddNode(animGraphId, argumentsJson);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::RemoveAnimGraphNode(
+        AZ::u32 animGraphId, AZStd::string nodeId)
+    {
+        return AnimGraphAuthoring::RemoveNode(animGraphId, nodeId);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::SetAnimGraphEntryState(
+        AZ::u32 animGraphId, AZStd::string nodeId)
+    {
+        return AnimGraphAuthoring::SetEntryState(animGraphId, nodeId);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::AddAnimGraphParameter(
+        AZ::u32 animGraphId, AZStd::string argumentsJson)
+    {
+        return AnimGraphAuthoring::AddParameter(animGraphId, argumentsJson);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::RemoveAnimGraphParameter(
+        AZ::u32 animGraphId, AZStd::string name)
+    {
+        return AnimGraphAuthoring::RemoveParameter(animGraphId, name);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::AddAnimGraphTransition(
+        AZ::u32 animGraphId, AZStd::string argumentsJson)
+    {
+        return AnimGraphAuthoring::AddTransition(animGraphId, argumentsJson);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::RemoveAnimGraphTransition(
+        AZ::u32 animGraphId, AZStd::string transitionId)
+    {
+        return AnimGraphAuthoring::RemoveTransition(animGraphId, transitionId);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::SetAnimGraphTransition(
+        AZ::u32 animGraphId, AZStd::string argumentsJson)
+    {
+        return AnimGraphAuthoring::SetTransition(animGraphId, argumentsJson);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::ConnectAnimGraphPorts(
+        AZ::u32 animGraphId, AZStd::string argumentsJson)
+    {
+        return AnimGraphAuthoring::ConnectPorts(animGraphId, argumentsJson);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::DisconnectAnimGraphPorts(
+        AZ::u32 animGraphId, AZStd::string argumentsJson)
+    {
+        return AnimGraphAuthoring::DisconnectPorts(animGraphId, argumentsJson);
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::SetAnimGraphNode(
+        AZ::u32 animGraphId, AZStd::string argumentsJson)
+    {
+        return AnimGraphAuthoring::SetNode(animGraphId, argumentsJson);
+    }
+
+    // -------------------------------------------------------------------------
+    // Asset readiness. Read-only queries to the Asset Processor over the
+    // editor's existing connection. Each is a synchronous round trip with the
+    // engine's own timeout; none calls CompileAssetSync, which would hold the
+    // main thread for a whole build.
+    // -------------------------------------------------------------------------
+
+    namespace
+    {
+        using EngineJobStatus = AzToolsFramework::AssetSystem::JobStatus;
+
+        // The mirror in Assets/AssetReadiness.h must match the engine enum
+        // value for value. JobStatus is stored in the Asset Processor's
+        // database, so the engine appends to it and never reorders it.
+        static_assert(static_cast<AZ::s32>(EngineJobStatus::Any) == static_cast<AZ::s32>(AssetReadiness::JobState::Any));
+        static_assert(static_cast<AZ::s32>(EngineJobStatus::Queued) == static_cast<AZ::s32>(AssetReadiness::JobState::Queued));
+        static_assert(static_cast<AZ::s32>(EngineJobStatus::InProgress) == static_cast<AZ::s32>(AssetReadiness::JobState::InProgress));
+        static_assert(static_cast<AZ::s32>(EngineJobStatus::Failed) == static_cast<AZ::s32>(AssetReadiness::JobState::Failed));
+        static_assert(
+            static_cast<AZ::s32>(EngineJobStatus::Failed_InvalidSourceNameExceedsMaxLimit) ==
+            static_cast<AZ::s32>(AssetReadiness::JobState::FailedInvalidSourceNameExceedsMaxLimit));
+        static_assert(static_cast<AZ::s32>(EngineJobStatus::Completed) == static_cast<AZ::s32>(AssetReadiness::JobState::Completed));
+        static_assert(static_cast<AZ::s32>(EngineJobStatus::Missing) == static_cast<AZ::s32>(AssetReadiness::JobState::Missing));
+
+        bool ConnectedToAssetProcessor()
+        {
+            bool connected = false;
+            AzFramework::AssetSystemRequestBus::BroadcastResult(
+                connected, &AzFramework::AssetSystemRequestBus::Events::ConnectedWithAssetProcessor);
+            return connected;
+        }
+
+        AZStd::string NotConnectedError()
+        {
+            return RequestError::EncodeError(RequestError::Unavailable, "not connected to the Asset Processor");
+        }
+
+        AZStd::string PathError(const AZStd::string& reason)
+        {
+            return RequestError::EncodeError(RequestError::ValidationFailed, "invalid path: " + reason);
+        }
+
+        //! The project and engine roots, for turning a full path into the
+        //! root-relative form the Asset Processor answers for.
+        AZStd::vector<AZStd::string> AssetQueryRoots()
+        {
+            AZStd::vector<AZStd::string> roots;
+            roots.push_back(AZStd::string(AZ::Utils::GetProjectPath().c_str()));
+            roots.push_back(AZStd::string(AZ::Utils::GetEnginePath().c_str()));
+            return roots;
+        }
+    } // namespace
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::GetAssetStatus(AZStd::string path, bool flushIo)
+    {
+        AZStd::string reason;
+        if (!AssetReadiness::IsAcceptablePath(path, reason))
+        {
+            return AZ::Failure(PathError(reason));
+        }
+        if (!ConnectedToAssetProcessor())
+        {
+            return AZ::Failure(NotConnectedError());
+        }
+        const AZStd::string queryPath = AssetReadiness::NormalizeQueryPath(path, AssetQueryRoots());
+        AzFramework::AssetSystem::AssetStatus status = AzFramework::AssetSystem::AssetStatus_Unknown;
+        if (flushIo)
+        {
+            AzFramework::AssetSystemRequestBus::BroadcastResult(
+                status, &AzFramework::AssetSystemRequestBus::Events::GetAssetStatus_FlushIO, queryPath);
+        }
+        else
+        {
+            AzFramework::AssetSystemRequestBus::BroadcastResult(
+                status, &AzFramework::AssetSystemRequestBus::Events::GetAssetStatus, queryPath);
+        }
+        return AZ::Success(AssetReadiness::BuildAssetStatusJson(path, queryPath, status));
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::GetAssetJobs(
+        AZStd::string sourcePath, bool escalate, bool includeLogs)
+    {
+        AZStd::string reason;
+        if (!AssetReadiness::IsAcceptablePath(sourcePath, reason))
+        {
+            return AZ::Failure(PathError(reason));
+        }
+        if (!ConnectedToAssetProcessor())
+        {
+            return AZ::Failure(NotConnectedError());
+        }
+        AZ::Outcome<AzToolsFramework::AssetSystem::JobInfoContainer> jobs = AZ::Failure();
+        const AZStd::string queryPath = AssetReadiness::NormalizeQueryPath(sourcePath, AssetQueryRoots());
+        AzToolsFramework::AssetSystemJobRequestBus::BroadcastResult(
+            jobs, &AzToolsFramework::AssetSystemJobRequestBus::Events::GetAssetJobsInfo, queryPath, escalate);
+        if (!jobs.IsSuccess())
+        {
+            return AZ::Failure(RequestError::EncodeError(
+                RequestError::EngineError,
+                AZStd::string::format("the Asset Processor did not answer the job query for '%s'", sourcePath.c_str())));
+        }
+
+        AZStd::vector<AssetReadiness::JobRecord> records;
+        records.reserve(jobs.GetValue().size());
+        for (const AzToolsFramework::AssetSystem::JobInfo& info : jobs.GetValue())
+        {
+            AssetReadiness::JobRecord record;
+            record.m_jobKey = info.m_jobKey;
+            record.m_platform = info.m_platform;
+            record.m_builder = info.m_builderGuid.ToString<AZStd::string>();
+            record.m_sourceFile = info.m_sourceFile;
+            record.m_watchFolder = info.m_watchFolder;
+            record.m_state = static_cast<AssetReadiness::JobState>(static_cast<AZ::s32>(info.m_status));
+            record.m_errorCount = info.m_errorCount;
+            record.m_warningCount = info.m_warningCount;
+            record.m_jobRunKey = info.m_jobRunKey;
+            if (includeLogs && AssetReadiness::IsFailedState(record.m_state))
+            {
+                record.m_hasLog = true;
+                AZ::Outcome<AZStd::string> log = AZ::Failure();
+                AzToolsFramework::AssetSystemJobRequestBus::BroadcastResult(
+                    log, &AzToolsFramework::AssetSystemJobRequestBus::Events::GetJobLog, info.m_jobRunKey);
+                if (log.IsSuccess())
+                {
+                    record.m_logAvailable = true;
+                    record.m_log = log.TakeValue();
+                    record.m_truncated = AssetReadiness::TruncateJobLog(record.m_log);
+                }
+            }
+            records.push_back(AZStd::move(record));
+        }
+        return AZ::Success(AssetReadiness::BuildAssetJobsJson(sourcePath, records));
+    }
+
+    AZ::Outcome<AZStd::string, AZStd::string> AiCompanionEditorSystemComponent::GetAssetProcessorStatus()
+    {
+        const bool connected = ConnectedToAssetProcessor();
+        float pingMs = 0.0f;
+        if (connected)
+        {
+            AzFramework::AssetSystemRequestBus::BroadcastResult(
+                pingMs, &AzFramework::AssetSystemRequestBus::Events::GetAssetProcessorPingTimeMilliseconds);
+        }
+        return AZ::Success(AssetReadiness::BuildAssetProcessorStatusJson(connected, pingMs));
+    }
+} // namespace AiCompanion

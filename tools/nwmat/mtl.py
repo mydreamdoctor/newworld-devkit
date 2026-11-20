@@ -170,6 +170,47 @@ def sub_noisy(name):
     return not name or bool(_NOISY_SUB.match(name))
 
 
+_slice_mtl_map_cache = {}
+
+
+_PAK_TOP = ('objects/', 'materials/', 'textures/', 'libs/',
+            'sharedassets/', 'engineassets/')
+
+
+def _slice_mtl_map(mesh_path):
+    """pak-relative cgf path -> per-entity .mtl assignment, read from
+    cgf_mtl_map.json beside the extracted 'assets' tree (generated from
+    the level's dynamicslice records). The slice states which material a
+    placed mesh uses, which beats name-matching when several sibling
+    .mtl files cover different sub-material sets (e.g. glowing_mat vs
+    glowing_wleaves_mat)."""
+    ap = os.path.abspath(mesh_path).replace(os.sep, '/')
+    rel = None
+    if '/assets/' in ap:
+        arena_src = ap.split('/assets/')[0]
+        rel = ap[ap.index('/assets/') + len('/assets/'):]
+    else:
+        # sources live under the project root; the pak-relative path
+        # starts at a top-level asset dir (objects/...).
+        arena_src = os.path.normpath(
+            os.path.join(_scan_root(mesh_path), '..', 'arena_src'))
+        for top in _PAK_TOP:
+            i = ap.find('/' + top)
+            if i >= 0:
+                rel = ap[i + 1:]
+                break
+    if rel is None:
+        return None
+    if arena_src not in _slice_mtl_map_cache:
+        p = os.path.join(arena_src, 'cgf_mtl_map.json')
+        try:
+            import json
+            _slice_mtl_map_cache[arena_src] = json.load(open(p))
+        except Exception:
+            _slice_mtl_map_cache[arena_src] = {}
+    return _slice_mtl_map_cache[arena_src].get(rel)
+
+
 def find_mtl_for_mesh(mesh_path, mat_names):
     """Locate the .mtl that defines a mesh's sub-materials.
 
@@ -185,6 +226,21 @@ def find_mtl_for_mesh(mesh_path, mat_names):
     # stray ''/'coll' subs in unrelated library materials (impostor
     # atlases etc.) and produce junk assignments.
     want = {sub_key(n) for n in mat_names if not sub_noisy(n)}
+
+    # the level assigns a material file per placed entity; honour it
+    # when it covers at least one of this mesh's sub-materials.
+    assigned = _slice_mtl_map(mesh_path)
+    if assigned:
+        assets_root = os.path.normpath(os.path.join(
+            _scan_root(mesh_path), '..', 'arena_src', 'assets'))
+        mtl_path = os.path.join(assets_root, assigned)
+        if os.path.isfile(mtl_path):
+            try:
+                m = Mtl.load(mtl_path)
+                if want & {sub_key(sn) for sn in m.by_name}:
+                    return mtl_path, m
+            except Exception:
+                pass
 
     def _score(m):
         return len(want & {sub_key(sn) for sn in m.by_name})

@@ -1,0 +1,206 @@
+/*
+ * Copyright (c) Contributors to the Open 3D Engine Project.
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ */
+
+#pragma once
+
+#include <AiCompanion/AgentServerBus.h>
+#include <AiCompanion/AiCompanionBus.h>
+#include <AiCompanion/AiCompanionEditorRequestBus.h>
+
+#include <AzCore/std/containers/deque.h>
+#include <AzCore/std/parallel/atomic.h>
+#include <AzCore/std/parallel/mutex.h>
+#include <AzCore/std/parallel/thread.h>
+#include <AzCore/std/smart_ptr/unique_ptr.h>
+#include <AzCore/std/string/string.h>
+
+#include <AzCore/JSON/document.h>
+
+#include <future>
+#include <memory>
+
+#if AZ_TRAIT_OS_PLATFORM_APPLE || defined(AZ_PLATFORM_LINUX)
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#elif defined(AZ_PLATFORM_WINDOWS)
+#include <WS2tcpip.h>
+#include <WinSock2.h>
+#endif
+
+// Forward declare OpenSSL types to avoid header dependency when TLS is not used
+typedef struct ssl_st SSL;
+typedef struct ssl_ctx_st SSL_CTX;
+
+namespace AiCompanion
+{
+#if AZ_TRAIT_OS_PLATFORM_APPLE || defined(AZ_PLATFORM_LINUX)
+    using SocketType = int;
+    static constexpr SocketType InvalidSocket = -1;
+#elif defined(AZ_PLATFORM_WINDOWS)
+    using SocketType = SOCKET;
+    static constexpr SocketType InvalidSocket = INVALID_SOCKET;
+#endif
+
+    //! Log level for audit logging
+    enum class AgentServerLogLevel : AZ::u8
+    {
+        Minimal = 0, // Server start/stop, client connect/disconnect, errors
+        Standard = 1, // Above + request type, ID, status, duration
+        Verbose = 2 // Above + full request/response bodies (truncated)
+    };
+
+    //! A pending request queued for main-thread execution
+    struct PendingRequest
+    {
+        AZStd::string id;
+        AZStd::string type;
+        AZStd::string payload; // base64 script for execute_python, empty for others
+        std::promise<AZStd::string> responsePromise;
+    };
+
+    //! AgentServer: Purpose-built TCP listener for AI agent communication.
+    //! Replaces RemoteConsole with a length-prefixed JSON protocol.
+    class AgentServer : public AgentServerRequestBus::Handler
+    {
+    public:
+        AgentServer();
+        ~AgentServer();
+
+        //! Starts the server with the given configuration.
+        bool Start(
+            const AZStd::string& host,
+            AZ::u16 port,
+            bool secureMode,
+            AgentServerLogLevel logLevel = AgentServerLogLevel::Minimal,
+            const AZStd::string& tlsCertPath = "",
+            const AZStd::string& tlsKeyPath = "");
+
+        //! Stops the server and cleans up all resources.
+        void Stop();
+
+        // -- AgentServerRequestBus overrides --
+        bool StartServer() override;
+        void StopServer() override;
+        bool IsRunning() const override;
+        AZ::u16 GetPort() const override;
+        AZStd::string GetHost() const override;
+        bool HasConnectedClient() const override;
+        bool IsSecureMode() const override;
+        void SetSecureMode(bool enabled) override;
+
+        //! Processes pending requests queued from the client thread.
+        //! Must be called from the main thread (e.g., from a component's OnTick).
+        void ProcessMainThreadQueue();
+
+    private:
+        // Background threads
+        void AcceptLoop();
+        void ClientLoop(SocketType clientSocket, const AZStd::string& clientAddr, AZ::u16 clientPort);
+
+        // Protocol helpers
+        bool ReadFramedMessage(SocketType sock, SSL* ssl, AZStd::string& outJson);
+        bool SendFramedMessage(SocketType sock, SSL* ssl, const AZStd::string& json);
+
+        // Request handling
+        AZStd::string HandleRequest(const AZStd::string& jsonRequest);
+        AZStd::string HandlePing(const AZStd::string& id);
+        AZStd::string HandleGetApiVersion(const AZStd::string& id);
+        AZStd::string HandleGetSceneSnapshot(const AZStd::string& id);
+        AZStd::string HandleGetEntityTree(const AZStd::string& id);
+        AZStd::string HandleValidateScene(const AZStd::string& id);
+        AZStd::string HandleGetEntity(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleGetBusSchema(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleCreateEntity(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleSetTransform(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleDeleteEntity(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleListAnimGraphs(const AZStd::string& id);
+        AZStd::string HandleGetAnimGraph(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleCreateAnimGraph(const AZStd::string& id);
+        AZStd::string HandleRemoveAnimGraph(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleLoadAnimGraph(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleSaveAnimGraph(const AZStd::string& id, const rapidjson::Document& doc);
+        //! The add types hand the whole request object to the editor event,
+        //! which reads node_type / parameter_type and the optional fields.
+        AZStd::string HandleAddAnimGraphNode(const AZStd::string& id, const rapidjson::Document& doc, const AZStd::string& jsonRequest);
+        AZStd::string HandleRemoveAnimGraphNode(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleSetAnimGraphEntryState(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleAddAnimGraphParameter(
+            const AZStd::string& id, const rapidjson::Document& doc, const AZStd::string& jsonRequest);
+        AZStd::string HandleRemoveAnimGraphParameter(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleRemoveAnimGraphTransition(const AZStd::string& id, const rapidjson::Document& doc);
+        //! The asset readiness types: read-only Asset Processor queries.
+        AZStd::string HandleGetAssetStatus(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleGetAssetJobs(const AZStd::string& id, const rapidjson::Document& doc);
+        AZStd::string HandleGetAssetProcessorStatus(const AZStd::string& id);
+        //! The anim graph request types whose arguments the engine-facing
+        //! code reads from the request itself: the handler checks
+        //! anim_graph_id and forwards the whole JSON.
+        AZStd::string HandleAnimGraphJsonRequest(
+            const AZStd::string& id,
+            const rapidjson::Document& doc,
+            const AZStd::string& jsonRequest,
+            const char* requestType,
+            AZ::Outcome<AZStd::string, AZStd::string> (AiCompanionEditorRequests::*event)(AZ::u32, AZStd::string));
+
+        // Response builders
+        AZStd::string BuildResponse(
+            const AZStd::string& id, const char* status, const AZStd::string& output, const AZStd::string& error, AZ::s64 durationMs);
+        //! code is emitted as the reply's "code" field; every error reply the
+        //! server sends passes one from the RequestError vocabulary.
+        AZStd::string BuildErrorResponse(const AZStd::string& id, const AZStd::string& error, const char* code = nullptr);
+        //! The error reply for a failed bus event: splits the event's
+        //! RequestError::EncodeError text into code and message (a plain text
+        //! becomes engine_error) and builds the coded reply.
+        AZStd::string FailureResponse(const AZStd::string& id, const AZStd::string& encodedError);
+
+        // Logging helpers
+        void LogMinimal(const char* format, ...) const;
+        void LogStandard(const char* format, ...) const;
+        void LogVerbose(const char* format, ...) const;
+
+        // Socket helpers
+        void CloseSocket(SocketType& sock);
+
+        // TLS helpers
+        bool InitTls(const AZStd::string& certPath, const AZStd::string& keyPath);
+        void ShutdownTls();
+
+        // Configuration
+        AZStd::string m_host = "127.0.0.1";
+        AZ::u16 m_port = 4600;
+        AZStd::atomic_bool m_secureMode{ false };
+        AgentServerLogLevel m_logLevel = AgentServerLogLevel::Minimal;
+
+        // State
+        AZStd::atomic_bool m_running{ false };
+        SocketType m_listenSocket = InvalidSocket;
+        AZStd::atomic<SocketType> m_clientSocket{ InvalidSocket };
+        AZStd::thread m_acceptThread;
+        AZStd::thread m_clientThread;
+        AZStd::mutex m_clientMutex;
+
+        // TLS
+        SSL_CTX* m_sslCtx = nullptr;
+        bool m_tlsEnabled = false;
+
+        // Request queue (client thread → main thread)
+        AZStd::mutex m_queueMutex;
+        AZStd::deque<std::shared_ptr<PendingRequest>> m_pendingRequests;
+
+        // Protocol constants
+        static constexpr AZ::u32 MaxMessageSize = 16 * 1024 * 1024; // 16 MiB
+        static constexpr int PollTimeoutMs = 100;
+        static constexpr size_t LogTruncateSize = 4096;
+
+#if defined(AZ_PLATFORM_WINDOWS)
+        bool m_wsaInitialized = false;
+#endif
+    };
+
+} // namespace AiCompanion

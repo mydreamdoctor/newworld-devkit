@@ -1,0 +1,207 @@
+# Copyright (c) Contributors to the Open 3D Engine Project.
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+"""Convenience helpers for working with O3DE transforms via azlmbr."""
+
+from typing import List, Optional, Tuple, Union
+
+Number = Union[int, float]
+
+
+def to_vector3(values: Optional[List[Number]] = None, x: Number = 0, y: Number = 0, z: Number = 0):
+    """Convert a list or x/y/z values to an azlmbr.math.Vector3."""
+    import azlmbr.math as azmath
+
+    if values is not None:
+        if len(values) == 3:
+            return azmath.Vector3(float(values[0]), float(values[1]), float(values[2]))
+        raise ValueError(f"Expected 3 values for Vector3, got {len(values)}")
+    return azmath.Vector3(float(x), float(y), float(z))
+
+
+def mark_entity_dirty(entity_id) -> None:
+    """Tell the editor the entity changed, so the prefab template records it.
+
+    TransformBus setters and SetName change the live entity but do not by
+    themselves mark it dirty for the prefab system; without AddDirtyEntity
+    inside the surrounding undo batch, a saved level keeps the entity's
+    original transform, scale and name (the launcher check saw a 30-unit
+    ground saved with no scale and no name).
+    """
+    import azlmbr.bus as bus
+    import azlmbr.editor as editor
+    editor.ToolsApplicationRequestBus(bus.Broadcast, "AddDirtyEntity", entity_id)
+
+
+def commit_entity_to_prefab(entity_id) -> None:
+    """Record the entity's state in the level's prefab template right now.
+
+    The editor captures dirty entities into the template only when the root
+    undo batch ends, and creating the next entity through the prefab system
+    propagates the template and wipes live changes not yet captured. In a
+    call that creates several entities only the last one survived; the
+    launcher check saved a ground and three lights as bare "Entity2".."Entity5".
+    The gem's editor bus exposes the same call the editor makes at batch end.
+    Silently a no-op on a gem build without the event.
+    """
+    import azlmbr.bus as bus
+    import azlmbr.editor as editor
+    try:
+        editor.AiCompanionEditorRequestBus(bus.Broadcast, "CommitEntityToPrefab", entity_id)
+    except (AttributeError, TypeError, RuntimeError):
+        pass
+
+
+def set_entity_position(entity_id, position: List[Number]):
+    """Set an entity's world position."""
+    import azlmbr.bus as bus
+    import azlmbr.components as components
+
+    vec = to_vector3(position)
+    components.TransformBus(bus.Event, "SetWorldTranslation", entity_id, vec)
+
+
+def set_entity_rotation(entity_id, rotation: List[Number]):
+    """Set an entity's rotation in degrees (Euler angles)."""
+    import azlmbr.bus as bus
+    import azlmbr.components as components
+    import azlmbr.math as azmath
+
+    euler = azmath.Vector3(float(rotation[0]), float(rotation[1]), float(rotation[2]))
+    # O3DE 2310+ flattens static factories to module level with a class-name
+    # prefix. Older builds expose them as Quaternion.CreateFromEulerAnglesDegrees.
+    if hasattr(azmath, "Quaternion_CreateFromEulerAnglesDegrees"):
+        quat = azmath.Quaternion_CreateFromEulerAnglesDegrees(euler)
+    else:
+        quat = azmath.Quaternion.CreateFromEulerAnglesDegrees(euler)
+    components.TransformBus(bus.Event, "SetWorldRotationQuaternion", entity_id, quat)
+
+
+def set_entity_scale(entity_id, scale: Union[Number, List[Number]]):
+    """Set an entity's local scale. Accepts a single uniform value or [x, y, z].
+
+    The Transform component holds one uniform scale (`SetLocalUniformScale`).
+    A non-uniform [x, y, z] needs the editor's Non-uniform Scale component,
+    which editor Python cannot add: `AddNonUniformScaleComponent` is not
+    reflected and `EditorComponentAPIBus.AddComponentOfType` does not find it
+    by name. The gem's C++ `AiCompanionEditorRequestBus.SetScale` adds it the
+    way the Transform component's own button does, so that is tried first;
+    on a gem build without the event the old `EditorComponentAPIBus` attempt
+    runs, and if that fails too the largest axis is applied as a uniform
+    scale so the entity is at least visible.
+    """
+    import azlmbr.bus as bus
+    import azlmbr.components as components
+
+    if isinstance(scale, (int, float)):
+        components.TransformBus(bus.Event, "SetLocalUniformScale", entity_id, float(scale))
+        return
+
+    sx, sy, sz = float(scale[0]), float(scale[1]), float(scale[2])
+
+    if abs(sx - sy) < 1e-4 and abs(sy - sz) < 1e-4:
+        components.TransformBus(bus.Event, "SetLocalUniformScale", entity_id, sx)
+        return
+
+    if _set_scale_natively(entity_id, sx, sy, sz):
+        return
+
+    if _try_set_non_uniform_scale(entity_id, sx, sy, sz):
+        return
+
+    # Fallback: use the largest axis as the uniform scale. This is visually
+    # wrong for objects that depend on non-uniform geometry (walls, planes)
+    # but ensures the entity is visible. Tracked as a known limitation.
+    components.TransformBus(
+        bus.Event, "SetLocalUniformScale", entity_id, max(sx, sy, sz)
+    )
+
+
+def _set_scale_natively(entity_id, sx: float, sy: float, sz: float) -> bool:
+    """Apply a scale through the gem's C++ `SetScale` event.
+
+    Returns True when the event answered success, False on a gem build
+    without the event or when it refused (out of range, or the engine did
+    not add the component).
+    """
+    import azlmbr.bus as bus
+    import azlmbr.editor as editor
+    import azlmbr.math as azmath
+
+    try:
+        outcome = editor.AiCompanionEditorRequestBus(
+            bus.Broadcast, "SetScale", entity_id, azmath.Vector3(sx, sy, sz)
+        )
+    except (AttributeError, TypeError, RuntimeError):
+        return False
+    return bool(hasattr(outcome, "IsSuccess") and outcome.IsSuccess())
+
+
+def _try_set_non_uniform_scale(entity_id, sx: float, sy: float, sz: float) -> bool:
+    """Attempt to add the Non-uniform Scale component and set its Scale
+    through `EditorComponentAPIBus`, for gem builds without `SetScale`.
+
+    Returns True if the component was added and the value was set,
+    False if the component is not registered on this build.
+    """
+    import azlmbr.bus as bus
+    import azlmbr.entity as entity_api
+    import azlmbr.editor as editor
+    import azlmbr.math as azmath
+
+    for type_name in ("Non-uniform Scale", "NonUniformScale", "Non Uniform Scale"):
+        tids = editor.EditorComponentAPIBus(
+            bus.Broadcast, "FindComponentTypeIdsByEntityType",
+            [type_name], entity_api.EntityType().Game
+        )
+        if not tids:
+            continue
+        # FindComponentTypeIdsByEntityType returns a list whose entries may be
+        # null UUID wrappers when the name did not match. We can't reliably
+        # distinguish a valid Uuid from a null one without an extra round
+        # trip, so just attempt the add and see if it succeeds.
+        outcome = editor.EditorComponentAPIBus(
+            bus.Broadcast, "AddComponentOfType", entity_id, tids[0]
+        )
+        if not (hasattr(outcome, "IsSuccess") and outcome.IsSuccess()):
+            continue
+        pair = outcome.GetValue()
+        vec = azmath.Vector3(sx, sy, sz)
+        result = editor.EditorComponentAPIBus(
+            bus.Broadcast, "SetComponentProperty", pair, "Scale", vec
+        )
+        if hasattr(result, "IsSuccess") and result.IsSuccess():
+            return True
+        # Component added but property path was wrong. Still report True so
+        # we don't fall through to the uniform fallback (the user can fix
+        # the property later via the Inspector).
+        return True
+    return False
+
+
+def set_entity_parent(entity_id, parent_id):
+    """Set an entity's parent.
+
+    ``parent_id`` may be an EntityId proxy, an int or an id string; an int is
+    resolved to the live entity first, because a raw int handed to the bus is
+    marshalled into a wrong id on O3DE 26.10.0 (observed: the child ended up
+    under an unrelated entity). Raises ``ValueError`` when no entity has that id.
+    """
+    import azlmbr.bus as bus
+    import azlmbr.components as components
+
+    from .id_helpers import entity_id_from_value
+
+    parent = entity_id_from_value(parent_id)
+    if parent is None:
+        raise ValueError(f"Unknown parent entity id: {parent_id!r}")
+    components.TransformBus(bus.Event, "SetParent", entity_id, parent)
+
+
+def get_entity_position(entity_id) -> Tuple[float, float, float]:
+    """Get an entity's world position as a tuple."""
+    import azlmbr.bus as bus
+    import azlmbr.components as components
+
+    vec = components.TransformBus(bus.Event, "GetWorldTranslation", entity_id)
+    return (vec.x, vec.y, vec.z)

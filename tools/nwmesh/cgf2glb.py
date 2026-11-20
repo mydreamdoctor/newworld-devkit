@@ -144,10 +144,19 @@ def convert(src, dst, texmap=None):
                     continue
                 sname = (c.mtl_subs[s['matid']]
                          if s['matid'] < len(c.mtl_subs) else '') or ''
-                # 'Shadow' subsets re-draw the same leaf cards as a
-                # shadow-pass proxy; 'Collision'/'nodraw' subs are never
-                # render geometry.
-                if sname.lower() in ('shadow', 'collision', 'nodraw'):
+                # 'Shadow' subsets ARE the visible leaf cards in NW veg
+                # assets — the game draws the shadow material's geometry
+                # in the main pass, and the mtl 'Shadow' sub-material
+                # binds the leaf texture. In rigid meshes an untextured
+                # 'shadow'/'shadow2' subset is a shadow-pass hull: emit it
+                # only when its material resolves a diffuse texture.
+                low = sname.lower()
+                if 'shadow' in low and \
+                        not texmap.get(sname, {}).get('baseColor'):
+                    continue
+                if any(k in low for k in
+                       ('collision', 'nodraw', 'proxy',
+                        'coll', 'ucx')):
                     continue
                 prims.append({'attributes': attrs,
                               'indices': g.accessor(5125, 'SCALAR', sidx,

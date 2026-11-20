@@ -1,0 +1,98 @@
+# Prefab Catalog
+
+Pre-configured entity prefabs in `Assets/Prefabs/`. Spawn them with:
+
+```python
+from ai_companion.api import spawn_prefab
+spawn_prefab("Player_TwinStick", position=[0, 0, 1])
+```
+
+Names are checked against the files on disk first. An unknown name returns a
+`prefab_not_found` error and the prefab system is never called, because asking
+an engine built before o3de/o3de#20099 to instantiate a template it cannot load
+crashes the editor (see `spawn_prefab` in the [API reference](api-reference.md)). Through o3de-mcp,
+`instantiate_prefab("Prefabs/Player_TwinStick.prefab")` reaches the same prefabs;
+its guard accepts them via the asset catalog even though they live in the gem's
+`Assets` folder rather than the project.
+
+## Player
+
+### Player_TwinStick
+Player entity with twin-stick movement controls.
+- **Mesh**: Capsule
+- **Physics**: Dynamic rigid body, capsule collider, no gravity, linear damping
+- **Script**: `twin_stick_movement.lua` (WASD movement, mouse aim)
+- **Tag**: `Player`
+
+## Enemies
+
+### Enemy_Chaser
+Enemy that chases the player and attacks in melee range.
+- **Mesh**: Cube
+- **Physics**: Dynamic rigid body, box collider
+- **Script**: `enemy_chase_ai.lua` (Idle -> Chase -> Attack state machine)
+- **Tag**: `Enemy`
+
+### Enemy_Turret
+Stationary turret body. It does not aim at or track the player: its script
+fires only while the `fire` input event is held, straight along the entity's
+forward axis, and the `ProjectilePrefab` spawnable it needs is left unset in
+the prefab (assign the projectile prefab's `.spawnable` in the Inspector or
+with o3de-mcp's `assign_asset`; until then `Fire()` logs once and does
+nothing). Add your own targeting or input wiring to make it a working enemy.
+- **Mesh**: Cylinder (1.5x scale)
+- **Physics**: Static rigid body, cylinder collider
+- **Script**: `projectile_launcher.lua` (1 shot/sec, speed 15, damage 15, `ProjectilePrefab` unset)
+- **Tag**: `Enemy`, `Turret`
+
+## Projectiles
+
+### Projectile_Basic
+Basic projectile with damage on contact and auto-destroy.
+- **Mesh**: Sphere (0.2 scale)
+- **Physics**: Dynamic rigid body (no gravity); hits are detected by distance in `damage_on_contact.lua`
+- **Script**: `damage_on_contact.lua` (10 damage, destroys on contact, 5s lifetime)
+- **Tag**: `Projectile`
+
+## Pickups
+
+### Pickup_Health
+Health pickup that heals on contact and respawns.
+- **Mesh**: Sphere (0.5 scale)
+- **Physics**: Sphere collider (optional; pickup detection is by distance in `health_pickup.lua`)
+- **Script**: `health_pickup.lua` (25 HP heal, 10s respawn, visual rotation)
+- **Tag**: `Pickup`, `Health`
+
+### Pickup_Ammo
+Ammo pickup placeholder. There is no ammo system in the gem's scripts: it runs
+`health_pickup.lua` with `HealAmount` 0, so it is collected by distance,
+hides, rotates and respawns like the health pickup but restores nothing.
+Swap the script or raise `HealAmount` to give it an effect.
+- **Mesh**: Cube (0.5 scale)
+- **Physics**: Box collider, trigger (optional; pickup detection is by distance in `health_pickup.lua`)
+- **Script**: `health_pickup.lua` (`HealAmount` 0, 15s respawn, 60 deg/s rotation)
+- **Tag**: `Pickup`, `Ammo`
+
+## Environment
+
+### Environment_Ground
+Flat ground plane with collision.
+- **Mesh**: Cube (50x50x0.1 scale)
+- **Physics**: Static rigid body, box collider
+
+## Lighting
+
+### Lighting_ThreePoint
+Three-point lighting rig with parent entity and 3 child lights.
+- **Key Light**: Directional light, warm white, intensity 5.0
+- **Fill Light**: Point light, cool white, intensity 2.0, 30m radius
+- **Rim Light**: Spot light, neutral, intensity 3.0, 45-degree cone
+
+## Camera
+
+### Camera_TopDown
+Top-down camera looking straight down.
+- **Position**: (0, 0, 20)
+- **Rotation**: (-90, 0, 0): looking straight down
+- **FOV**: 60 degrees
+- **Active on activation**: Yes

@@ -1,0 +1,397 @@
+# Integration with o3de-mcp
+
+How AI Companion works with [o3de-mcp](https://github.com/nickschuetz/o3de-mcp).
+
+## Architecture
+
+```
+Claude / AI Agent
+       |
+       v
+  o3de-mcp (MCP Server)
+       |
+       |  Length-prefixed JSON over TCP (port 4600)
+       v
+  O3DE Editor: AiCompanion AgentServer (C++)
+       |
+       +-- native request types (no Python; all served in secure mode)
+       |     reads: get_scene_snapshot, get_entity_tree, get_entity,
+       |            validate_scene, get_bus_schema
+       |     mutations: create_entity, set_transform, delete_entity
+       |            (InputValidator, own undo batch)
+       |     anim graphs: list_anim_graphs, get_anim_graph and the
+       |            fifteen authoring and wiring types (EMotion Studio commands)
+       |          |
+       |          v  AiCompanionRequestBus / AiCompanionEditorRequestBus
+       |     SceneSnapshotProvider, InputValidator, BusSchema, AnimGraph*
+       |
+       +-- execute_python (run_editor_python, sessions; EditorPythonBindings)
+                 |
+                 |  import ai_companion
+                 v
+            AI Companion Python API
+                 |
+                 +-- builders, templates, feedback, safety, agent mode
+                 |
+                 v  azlmbr
+  O3DE Engine (Entity/Component System)
+```
+
+## How It Works
+
+Two paths share the connection:
+
+1. The AI agent calls an o3de-mcp tool
+2. For a native tool (`get_scene_snapshot`, `get_entity_tree`, `get_entity`, `validate_scene`, `get_bus_schema_live`, the native-first `create_entity`, `set_transform` and `delete_entity`, and the seventeen anim graph tools) o3de-mcp sends the matching request type as a length-prefixed JSON message to the AgentServer (port 4600); the server queues it to the editor's main thread, where the gem's C++ answers over `AiCompanionRequestBus` or `AiCompanionEditorRequestBus` with no Python involved
+3. For `run_editor_python` and the session tools o3de-mcp sends an `execute_python` request with the base64-encoded script; the AgentServer dispatches it to the main thread through `EditorPythonRunnerRequestBus`, the script imports `ai_companion.api` and calls its functions, and AI Companion translates them into `azlmbr` calls
+4. Either way the result comes back as a framed JSON reply through the same connection, with a `code` on every error
+
+## AgentServer Protocol
+
+The AgentServer uses a length-prefixed JSON protocol:
+
+```
+[4 bytes: uint32 big-endian length N] [N bytes: UTF-8 JSON body]
+```
+
+### Request types
+
+| Type | Purpose | Requires Python |
+|------|---------|----------------|
+| `execute_python` | Run a Python script (base64-encoded) | Yes |
+| `ping` | Connection health check | No |
+| `get_api_version` | Protocol and gem version info | No |
+| `get_scene_snapshot` | Full scene state as JSON | No (C++ EBus) |
+| `get_entity_tree` | Entity hierarchy tree | No (C++ EBus) |
+| `get_entity` | One entity (`entity_id` parameter): position, rotation, `scale` (uniform), `non_uniform_scale` (the component's value or null), `effective_scale`, parent, components | No (C++ EBus) |
+| `validate_scene` | Scene validation | No (C++ EBus) |
+| `get_bus_schema` | Reflected EBus description (`bus_name` parameter, empty lists all) | No (C++ BehaviorContext) |
+| `create_entity` | Create a named entity (`name`, `position?`, `parent_id?`), validated, undoable | No (C++) |
+| `set_transform` | Set `position`, `rotation` (Euler degrees) or `rotation_quaternion` (`[x, y, z, w]`), and `scale` (a number, or `[x, y, z]`; unequal elements add the editor's Non-uniform Scale component) on `entity_id`, validated, undoable; answers the `get_entity` shape | No (C++) |
+| `delete_entity` | Delete `entity_id` and descendants; refuses the level root, undoable | No (C++) |
+| `list_anim_graphs` | Every EMotion FX anim graph the engine holds: id, file name, ownership and dirty flags, node and parameter counts, actor instances | No (C++ EMotion FX) |
+| `get_anim_graph` | One anim graph (`anim_graph_id` as number or string, or `file_name`): nodes with ports and connections, transitions with conditions, parameters, node groups | No (C++ EMotion FX) |
+| `create_anim_graph` | A new, unsaved editable anim graph: `{"id", "file_name"}` | No (C++ EMotion Studio) |
+| `remove_anim_graph` | Remove the editable graph `anim_graph_id` | No (C++ EMotion Studio) |
+| `load_anim_graph` | Load `file_name` (absolute, `@alias@`, or project-relative; inside the project or engine root) as an editable graph | No (C++ EMotion Studio) |
+| `save_anim_graph` | Save `anim_graph_id` to `file_name` (default: its own; inside the project root); not undoable | No (C++ EMotion Studio) |
+| `add_anim_graph_node` | Add a `node_type` node (class or palette name) under `parent_id` (default: the root) with optional `name` and `position`; answers the node as `get_anim_graph` does | No (C++ EMotion Studio) |
+| `remove_anim_graph_node` | Remove `node_id` (never the root) | No (C++ EMotion Studio) |
+| `set_anim_graph_entry_state` | Make `node_id` its state machine's entry state | No (C++ EMotion Studio) |
+| `add_anim_graph_parameter` | Add value parameter `name` of `parameter_type` with optional `default`, `min`, `max`, `description`, `group`; answers the parameter as `get_anim_graph` does | No (C++ EMotion Studio) |
+| `remove_anim_graph_parameter` | Remove value parameter `name` | No (C++ EMotion Studio) |
+| `add_anim_graph_transition` | Add a transition into state `target_node_id` from `source_node_id` (absent or null: wildcard) with optional `blend_time`, `priority`, `disabled`, `sync_mode`, `interpolation` and `conditions` (`[{condition_type, attributes}]`); answers the transition as `get_anim_graph` does | No (C++ EMotion Studio) |
+| `remove_anim_graph_transition` | Remove `transition_id` | No (C++ EMotion Studio) |
+| `set_anim_graph_transition` | Set any of `blend_time`, `priority`, `disabled`, `sync_mode`, `interpolation` on `transition_id` | No (C++ EMotion Studio) |
+| `connect_anim_graph_ports` | Connect `source_port` of `source_node_id` to `target_port` of `target_node_id` inside a blend tree (a port is an index or a name); answers the input port as `get_anim_graph` does | No (C++ EMotion Studio) |
+| `disconnect_anim_graph_ports` | Remove the connection into `target_port` of `target_node_id` | No (C++ EMotion Studio) |
+| `set_anim_graph_node` | Set any of `name`, `position`, `enabled`, `attributes` (reflected fields, e.g. a motion node's `motionIds`) on `node_id`; answers the node as `get_anim_graph` does | No (C++ EMotion Studio) |
+| `get_asset_status` | Build status of `path` (a source relative path, a product relative path, or a full path to either): `unknown`, `missing`, `queued`, `compiling`, `compiled`, `failed`; optional `flush_io` for a file written a moment ago; asking escalates the asset's build priority; a full path under the project or engine root is queried in root-relative form (`query_path` in the reply); a source whose job failed answers `missing`, so a lasting `missing` means ask `get_asset_jobs` | No (C++ Asset Processor connection) |
+| `get_asset_jobs` | The Asset Processor's jobs for `source_path`: `job_key`, `platform`, `builder`, the matched `source_file` and `watch_folder`, `status` (`queued`, `in_progress`, `failed`, `completed`, `missing`), `error_count`, `warning_count`, `job_run_key`; optional `escalate`, and `include_logs` for each failed job's `log` (cut at 64 KB) | No (C++ Asset Processor connection) |
+| `get_asset_processor_status` | Whether the editor is connected to the Asset Processor (`connected`) and the ping (`ping_ms`); never fails | No (C++ Asset Processor connection) |
+
+o3de-mcp uses `ping` for protocol detection, `get_api_version` inside
+`get_capabilities()` to confirm the gem is present, the C++ read types behind
+its `get_scene_snapshot`, `get_entity_tree`, `get_entity`, `validate_scene` and
+`get_bus_schema_live` tools, the three mutation types first in its
+`create_entity`, `set_transform` and `delete_entity` tools (falling back to
+editor Python only on `unknown_request_type`), and the seventeen anim graph
+types one to one in tools of the same names (`list_anim_graphs`,
+`get_anim_graph`, `create_anim_graph`, `remove_anim_graph`, `load_anim_graph`,
+`save_anim_graph`, `add_anim_graph_node`, `remove_anim_graph_node`,
+`set_anim_graph_entry_state`, `add_anim_graph_parameter`,
+`remove_anim_graph_parameter`, `add_anim_graph_transition`,
+`remove_anim_graph_transition`, `set_anim_graph_transition`,
+`connect_anim_graph_ports`, `disconnect_anim_graph_ports`,
+`set_anim_graph_node`; on o3de-mcp main, shipping in o3de-mcp 0.6.0 alongside
+gem 0.6.0). Everything else (`run_editor_python`, the session tools, and the
+editor tools that have no native type, such as `add_component` and
+`set_component_property`) goes through `execute_python`. The native types keep
+working when the AgentServer runs in secure mode, which disables
+`execute_python`. The two anim graph reads are read-only: `get_anim_graph`
+answers `anim graph not found: <selector>` (code `not_found`) for an unknown
+graph, and both answer `EMotion FX is not available` (code `unavailable`) when
+the EMotionFX gem is not loaded.
+
+The three asset readiness types are read-only round trips over the editor's
+own Asset Processor connection. `get_asset_status` and `get_asset_jobs`
+answer `unavailable` (`not connected to the Asset Processor`) without a
+connection and `validation_failed` for an empty, over-long or
+control-character path or a non-boolean flag; `get_asset_processor_status`
+answers `connected: false` instead of failing. Asking for a status escalates
+the asset's build priority (the engine's behaviour); none of them compiles
+synchronously, so a client polls `get_asset_status` until `compiled` or
+`failed` and then reads the failed job's log with `get_asset_jobs` (see the
+[wait recipe](agent-best-practices.md#wait-for-an-asset-you-just-wrote)).
+o3de-mcp's `get_asset_status`, `get_asset_jobs` and `wait_for_asset` wrappers
+are to follow.
+
+The fifteen authoring types run through EMotion Studio's command system, so each
+request is one step in the Animation Editor's own undo history, not the
+editor's main Undo (and a save is not undoable). The gem validates every
+argument before sending a command: names may not contain `"`, `%`, `{` or
+`}`; `node_type` must be a creatable AnimGraphNode class and allowed under the
+parent (only states inside a state machine, entry and exit nodes only in a
+child state machine, a final node only in a blend tree); `parameter_type` must
+be one of Float, FloatSlider, FloatSpinner, Int, IntSlider, IntSpinner, Bool,
+Tag, String, Vector2, Vector3, Vector3Gizmo, Vector4, Color, Rotation or the
+engine class name, with `min` and `max` only for the ranged ones and values
+typed per kind (number, integer, bool, string, or an array of 2, 3 or 4
+numbers); paths are normalized against the project root. The type fields are
+`node_type` and `parameter_type` because `type` is the request envelope's own
+field. A graph owned by an asset or runtime instance (one an Anim Graph
+component plays) is refused for every write with `validation_failed`; load
+the file with `load_anim_graph` to edit a copy, then save it.
+
+The wiring types add their own checks. `add_anim_graph_transition` needs a
+target state inside a state machine and a source that is a state of the same
+state machine and not an exit node (absent or null: a wildcard transition);
+its `conditions` are `{"condition_type", "attributes"}` objects where the type
+is ParameterCondition, TimeCondition, PlayTimeCondition, MotionCondition,
+StateCondition, TagCondition, Vector2Condition or the engine class name, and
+the attributes are the condition's reflected fields (for a parameter
+condition `parameterName`, `function` as 0 to 7 or GREATER, GREATEREQUAL,
+LESS, LESSEQUAL, NOTEQUAL, EQUAL, INRANGE, NOTINRANGE, `testValue`,
+`rangeValue`, `timeRequirement`, `stringFunction`, `testString`; the other
+types are listed in `Code/Source/Animation/AnimGraphCommandText.cpp`); node
+ids named by a condition must exist and parameter names must name a value
+parameter. The field is `condition_type` because `type` is the envelope's
+own field. `connect_anim_graph_ports` resolves a port given as a name
+(exactly, then case-insensitively) before the engine sees it, needs both nodes
+in the same blend tree, compatible port data types, a free input port and no
+cycle, and refuses a state as the target with a pointer to
+`add_anim_graph_transition`. `set_anim_graph_node` checks a new name is
+unique and that each `attributes` key is a reflected field of the node's
+class, taking a number, bool or string, or a list of strings for a string
+list and for a motion node's `motionIds`; an unknown key answers
+`validation_failed` listing the settable fields. Without EMotion
+Studio (the Animation Editor's command system) every authoring type answers
+`unavailable`; a command the engine refuses answers `engine_error` with the
+engine's own text.
+
+### Response format
+
+```json
+{"id": "uuid", "status": "ok|error", "output": "...", "error": "...", "code": "...", "duration_ms": 123}
+```
+
+`code` is present on every `error` reply and absent from `ok` replies.
+
+Three id forms exist, and o3de-mcp documents the same split: native JSON
+carries every 64-bit entity id as a decimal string (`API_VERSION` 0.4.0 and
+up; 0.3.0 and lower sent JSON numbers, which a JavaScript parser corrupts above
+2^53), the editor-Python fallback sentences print bracketed `[id]`, and every
+tool and request field accepts either a number or a string.
+
+`api_version` is the gate for the transform contract too: 0.5.0 and up accept
+`scale` as `[x, y, z]` and `rotation_quaternion`, and every entity object they
+emit carries `non_uniform_scale` and `effective_scale` beside `scale`. A
+client talking to 0.4.0 sends a number for `scale` and Euler degrees for
+`rotation`, and reads `scale` alone. The native path is the only one that
+applies a non-uniform scale: editor Python cannot add the Non-uniform Scale
+component (`AddNonUniformScaleComponent` is not reflected, and
+`EditorComponentAPIBus` does not find it by name), and
+`NonUniformScaleRequestBus.GetScale` answers (0, 0, 0) on an entity without
+it, so a fallback that reads the bus blind reports a zero scale.
+
+Every error reply carries a `code` beside its `error` message, so a client
+branches on the code and shows the message. The vocabulary:
+
+| Code | When |
+|------|------|
+| `validation_failed` | A malformed or refused argument: invalid JSON, a missing `type` or `script` field, a bad base64 script, a missing or unparsable `entity_id` or `anim_graph_id`, an invalid entity name, a position outside the bound, a scale out of range, a refusal to delete the level root, or an anim graph write refused by the gem's own checks (a bad name, type, placement, value or path, or a graph an asset owns) |
+| `not_found` | The entity, anim graph or bus does not exist |
+| `unavailable` | A subsystem the request needs is not loaded: EMotion FX, EMotion Studio's command system, the gem's editor system component, the prefab system, or the editor's Python runner |
+| `engine_error` | The engine refused or failed the operation; `error` is the engine's own text (a prefab system message such as `no root prefab is assigned`, a failed EMotion FX command) |
+| `secure_mode` | `execute_python` refused because the server runs in secure mode |
+| `execution_failed` | The `execute_python` script raised; `error` holds the traceback and `output` what the script printed first |
+| `unknown_request_type` | The request `type` is not one the server serves; the one code a client falls back to editor Python on |
+| `timeout` | The editor's main thread did not answer within 30 seconds |
+| `shutting_down` | The server was stopping and dropped the request |
+
+A native type never answers `ok` with a failure hidden inside `output`: an
+unknown entity in `get_entity` and an unknown bus in `get_bus_schema` are
+`error` replies with `not_found`, and a validation refusal from the mutation
+or anim graph types is `validation_failed`. o3de-mcp converts any reply whose
+status is not `ok` into its own `{"status": "error", "code", "message"}`
+envelope and keeps the code, so an agent branches the same way on both sides.
+It falls back to `execute_python` on `unknown_request_type` alone.
+
+This vocabulary is the C++ server's own. The `code` field inside the JSON the
+Python API functions print to `output` is the Python package's (see the
+[API reference](api-reference.md#responses-and-error-codes)); the two overlap on
+purpose where they mean the same thing (`validation_failed`, `not_found`,
+`engine_error`) and differ where the layers differ (the server has
+`unavailable`, `secure_mode`, `execution_failed`, `unknown_request_type`,
+`timeout` and `shutting_down`; the package has `limit_exceeded`,
+`not_in_editor`, `editor_running`, `io_error`, `instantiate_failed` and
+`prefab_not_found`).
+
+See [Agent Best Practices](agent-best-practices.md) for token efficiency and performance tips.
+
+## Before vs After
+
+### Without AI Companion (raw o3de-mcp)
+
+Creating a player entity takes nine separate tool calls:
+
+```
+1. create_entity("Player")
+2. add_component(entity_id, "Mesh")
+3. set_component_property(entity_id, "Mesh", "mesh_asset", "capsule")
+4. add_component(entity_id, "PhysX Primitive Collider")
+5. set_component_property(entity_id, "PhysX Primitive Collider", "shape", "capsule")
+6. add_component(entity_id, "PhysX Dynamic Rigid Body")
+7. set_component_property(entity_id, "PhysX Dynamic Rigid Body", "mass", 1.0)
+8. add_component(entity_id, "Lua Script")
+9. set_component_property(entity_id, "Lua Script", "script", "twin_stick.lua")
+```
+
+### With AI Companion (1 call)
+
+```python
+run_editor_python('''
+from ai_companion.api import create_player
+print(create_player("Player", position=[0,0,1], movement="twin_stick"))
+''')
+```
+
+### Per-Operation Comparison
+
+| Operation | Raw o3de-mcp | With AI Companion |
+|-----------|-------------|-------------------|
+| Create player | 9 calls | 1 call |
+| Create arena | ~20 calls | 1 call |
+| Create enemy | ~6 calls | 1 call |
+| Create pickup | ~5 calls | 1 call |
+
+## Token Efficiency
+
+AI Companion reduces token usage by:
+- Fewer round trips (1 call vs 9)
+- Shorter prompts (function names vs multi-step scripts)
+- Structured JSON responses (vs raw text parsing)
+
+## Configuration
+
+### AgentServer Settings
+
+| Setting | Env Var | Settings Registry Key | Default |
+|---------|---------|----------------------|---------|
+| Enabled | `AI_COMPANION_SERVER_ENABLED` | `/O3DE/AiCompanion/AgentServer/Enabled` | `true` |
+| Host | `AI_COMPANION_SERVER_HOST` | `/O3DE/AiCompanion/AgentServer/Host` | `127.0.0.1` |
+| Port | `O3DE_EDITOR_PORT` | `/O3DE/AiCompanion/AgentServer/Port` | `4600` |
+| Secure Mode | `AI_COMPANION_SECURE_MODE` | `/O3DE/AiCompanion/AgentServer/SecureMode` | `false` |
+| TLS Enabled | `AI_COMPANION_TLS_ENABLED` | `/O3DE/AiCompanion/AgentServer/TlsEnabled` | `false` |
+| TLS Cert | `AI_COMPANION_TLS_CERT` | `/O3DE/AiCompanion/AgentServer/TlsCertPath` | (none) |
+| TLS Key | `AI_COMPANION_TLS_KEY` | `/O3DE/AiCompanion/AgentServer/TlsKeyPath` | (none) |
+| Log Level | `AI_COMPANION_LOG_LEVEL` | `/O3DE/AiCompanion/AgentServer/LogLevel` | `minimal` |
+
+**Precedence:** env var > settings registry > default.
+
+### o3de-mcp Client Settings
+
+| Setting | Env Var | Default |
+|---------|---------|---------|
+| Host | `O3DE_EDITOR_HOST` | `127.0.0.1` |
+| Port | `O3DE_EDITOR_PORT` | `4600` |
+| TLS Enabled | `O3DE_EDITOR_TLS` | `0` (off) |
+| TLS Verify | `O3DE_EDITOR_TLS_VERIFY` | `0` (off when TLS on) |
+| TLS CA Cert | `O3DE_EDITOR_TLS_CA` | (none) |
+| Connect timeout | `O3DE_EDITOR_CONNECT_TIMEOUT` | `5` seconds |
+| Command timeout | `O3DE_EDITOR_TIMEOUT` | `600` seconds (the editor runs each script synchronously) |
+| Project path | `O3DE_PROJECT_PATH` | (auto-detected) |
+| Viewport capture settle time | `O3DE_CAPTURE_WAIT` | (o3de-mcp default) |
+
+Enabling TLS without `O3DE_EDITOR_TLS_VERIFY=1` encrypts the channel but does
+not authenticate the peer.
+
+The Gem automatically registers its Python path when the editor starts.
+
+## o3de-mcp Tool Surface
+
+o3de-mcp main exposes 92 tools in seven groups: capabilities (1), editor
+(41), introspection (3), project (17), assets (5), track view (8) and animation
+(17); o3de-mcp 0.5.0 on PyPI has 67 of them (the first five groups), and the
+track view and animation groups ship in o3de-mcp 0.6.0, released alongside gem
+0.6.0. AI Companion sits behind the editor and animation groups. Tools that
+matter most when working with this gem:
+
+- `run_editor_python` runs a script that can `import ai_companion`.
+- `begin_session` / `exec_in_session` / `end_session` keep a Python namespace
+  alive across calls, so `ai_companion` is imported once per session instead
+  of once per request.
+- `get_scene_snapshot`, `get_entity_tree`, `get_entity` and `validate_scene`
+  return the gem's C++ snapshot and validation output without any editor
+  Python, and `get_bus_schema_live` asks the gem's native `get_bus_schema`
+  first. o3de-mcp's `create_entity`, `set_transform` and `delete_entity` try
+  the gem's native mutation request types first and fall back to editor Python
+  only when the gem answers `unknown_request_type` (nickschuetz/o3de-mcp#18).
+  `create_level` creates and opens a level through the engine's six-argument
+  `create_level_no_prompt` binding (nickschuetz/o3de-mcp#20; earlier versions
+  never created one).
+- The seventeen animation tools wrap the gem's anim graph request types one to
+  one, with the same argument names, so an agent reads, builds, wires and
+  saves an EMotion FX anim graph without writing editor Python.
+- `instantiate_prefab` accepts gem-shipped prefabs such as
+  `Prefabs/Player_TwinStick.prefab`; it checks the asset catalog, not only the
+  project root, before calling the prefab system.
+- `set_transform`, `set_parent`, `assign_asset`, `capture_viewport` and the
+  console and CVAR tools cover the low-level operations the builders wrap.
+
+Which o3de-mcp release you need depends on the tools: the native snapshot
+tools and gem detection arrived in 0.4.0, the native-first `create_entity`,
+`set_transform` and `delete_entity` tools and decimal-string ids in 0.5.0, and
+the animation tools and the server-side error codes in o3de-mcp 0.6.0, released
+alongside gem 0.6.0 (the gem's `API_VERSION` 0.4.0 contract). Install it from
+PyPI with `pip install o3de-mcp`, or work against a checkout with
+`pip install -e .` (or its `src/` on `PYTHONPATH`).
+Either way it requires the `mcp` 2.x Python SDK. A stale 1.x install in the same
+interpreter makes the server fail at import time, which the MCP client reports
+as a closed connection.
+
+## Capability Detection
+
+`get_capabilities()` probes the editor port and, when it answers, sends the
+AgentServer's native `get_api_version` request. The response distinguishes a
+bare socket from the gem:
+
+```json
+"editor": {
+  "status": "connected",
+  "ai_companion_gem": true,
+  "agent_server": {"protocol_version": 1, "gem_version": "0.6.0", "api_version": "0.5.0"}
+}
+```
+
+`ai_companion_gem` is `false` (with a hint) when only the legacy RemoteConsole
+answered, in which case `import ai_companion` will not work either.
+
+To confirm the Python API from within the editor:
+
+```python
+run_editor_python('''
+from ai_companion.api import get_api_version
+print(get_api_version())
+''')
+```
+
+## Best Practices
+
+1. **Use batch operations**: `create_entity_batch()` is more efficient than
+   individual `create_enemy()` calls for multiple entities
+
+2. **Check before creating**: Use `get_scene_snapshot()` to verify the current
+   state before adding entities
+
+3. **Validate after creation**: Use `validate_scene()` to catch common issues
+
+4. **Use undo batches**: Group related operations so they can be rolled back
+   together if needed
+
+5. **Prefer templates**: Use `create_player()`, `create_enemy()`, etc. over
+   the low-level `build_entity()` for common patterns
+
+6. **Use `ping` for health checks**: Cheaper than executing Python
+
+For comprehensive guidance, see [Agent Best Practices](agent-best-practices.md).
