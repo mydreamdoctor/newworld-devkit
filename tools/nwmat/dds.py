@@ -63,6 +63,17 @@ def _payload_size(base):
                for i in range(mips))
 
 
+def _repair_header(data):
+    """Some NW extractions write height 0 into the DDS header. NW
+    textures are square, so a zero height is repaired from the width."""
+    if len(data) >= 24 and struct.unpack_from('<I', data, 16)[0] and \
+            struct.unpack_from('<I', data, 20)[0] == 0:
+        out = bytearray(data)
+        struct.pack_into('<I', out, 20, struct.unpack_from('<I', out, 16)[0])
+        return bytes(out)
+    return data
+
+
 def reassemble(path):
     """Read a split DDS (+ mip tails) -> complete DDS bytes.
 
@@ -72,6 +83,7 @@ def reassemble(path):
         base = f.read()
     if len(base) < HDR:
         raise ValueError('%s: too small for a DDS header' % path)
+    base = _repair_header(base)
     want = _payload_size(base)
     if want is not None and len(base) - HDR >= want:
         return base
