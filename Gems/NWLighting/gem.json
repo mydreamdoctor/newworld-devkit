@@ -1,0 +1,28 @@
+{
+    "gem_name": "NWLighting",
+    "version": "0.1.0",
+    "display_name": "New World Lighting",
+    "license": "Apache-2.0 Or MIT",
+    "license_url": "https://github.com/o3de/o3de/blob/development/LICENSE.txt",
+    "origin": "New World devkit",
+    "origin_url": "https://github.com/mydreamdoctor/newworld-devkit",
+    "type": "Code",
+    "summary": "Applies New World level lighting: the game's sun (colour/intensity/shadow), hemisphere ambient built from sky and ground colours, and deferred fog, all driven by the environment data imported from a level.pak.",
+    "canonical_tags": [
+        "Gem"
+    ],
+    "user_tags": [
+        "NewWorld",
+        "Lighting",
+        "Rendering"
+    ],
+    "requirements": "",
+    "dependencies": [
+        "Atom",
+        "AtomLyIntegration"
+    ],
+    "documentation_url": "",
+    "dependencies_platform": "",
+    "restricted": "",
+    "icon_path": ""
+}
