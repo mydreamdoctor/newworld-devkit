@@ -212,6 +212,7 @@ def on_process_job(args):
     texmap = {}
     tex_products = {}
     need_alpha = set()
+    inv_masks = {}
     try:
         _mp, mats = _mesh_materials(src)
         print('nw_cgf_builder %s: mtl=%s mats={%s}'
@@ -235,6 +236,8 @@ def on_process_job(args):
                 if sub_alpha and mp == 'Diffuse':
                     need_alpha.add(fname)
                 if fname in tex_products:
+                    if inv_masks.get(fname) and t.get('alpha_test'):
+                        t['alpha_test'] = 1.0 - t['alpha_test']
                     t[slot[mp]] = fname
                     continue
                 outp = os.path.join(request.tempDirPath, fname)
@@ -244,9 +247,30 @@ def on_process_job(args):
                             # NW leaf materials keep alpha in a separate
                             # BC4 Opacity map and ship an all-zero diffuse
                             # alpha; merge so Packed-alpha cutout works.
+                            # Some maps use the inverted convention (fill
+                            # bright, leaves dark) — merge flips them and
+                            # the emitted cutoff mirrors to 1 - alpha_test.
+                            merged, inv = nwdds.merge_opacity_alpha(
+                                p, tex['Opacity'])
+                            if inv and t.get('alpha_test'):
+                                t['alpha_test'] = 1.0 - t['alpha_test']
+                            inv_masks[fname] = inv
                             with open(outp, 'wb') as f:
-                                f.write(nwdds.merge_opacity_alpha(
-                                    p, tex['Opacity']))
+                                f.write(merged)
+                        elif mp == 'Diffuse':
+                            # Alpha (if any) lives in the diffuse itself;
+                            # orient it as a cutout mask — the same
+                            # flipped convention occurs there too.
+                            try:
+                                oriented, inv = nwdds.reassemble_mask(p)
+                            except Exception:
+                                oriented, inv = nwdds.reassemble(p), False
+                            if inv:
+                                if t.get('alpha_test'):
+                                    t['alpha_test'] = 1.0 - t['alpha_test']
+                                inv_masks[fname] = inv
+                            with open(outp, 'wb') as f:
+                                f.write(oriented)
                         else:
                             with open(outp, 'wb') as f:
                                 f.write(nwdds.reassemble(p))
@@ -324,7 +348,7 @@ def register():
     desc = azlmbr.asset.builder.AssetBuilderDesc()
     desc.name = 'NW CGF Builder'
     desc.busId = BUS_ID
-    desc.version = 30
+    desc.version = 31
     pats = []
     for pat in ('*.cgf', '*.cgfheap', '*.skin'):
         p = azlmbr.asset.builder.AssetBuilderPattern()

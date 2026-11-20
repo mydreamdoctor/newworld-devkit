@@ -227,10 +227,26 @@ def _rgba_dds(w, h, rgba):
     return hdr + ext + bytes(rgba)
 
 
+def _orient_mask(mask):
+    """Return (mask, inverted). NW ships opacity maps in both conventions:
+    some store the leaf/cluster texels bright (alpha = coverage), others
+    store the *fill* bright and the leaves dark. A usable cutout mask has
+    the minority of atlas texels above the threshold, so a fill-dominant
+    map (median > 0.5) is treated as inverted and flipped. Uniform masks
+    (no texels at/below 0.5) are left alone — there is nothing to cut."""
+    s = sorted(mask)
+    med = s[len(s) // 2]
+    if med > 0x80 and s[0] <= 0x80:
+        return bytes(255 - v for v in mask), True
+    return bytes(mask), False
+
+
 def merge_opacity_alpha(diff_path, opacity_path):
-    """Reassemble+decode both DDS, return RGBA32 DDS bytes of diff's RGB
-    with opacity's channel as alpha. NW ships opacity maps at a lower
-    resolution than the diffuse; resample to the diffuse size."""
+    """Reassemble+decode both DDS, return (RGBA32 DDS bytes, inverted) of
+    diff's RGB with opacity's channel as alpha. NW ships opacity maps at
+    a lower resolution than the diffuse; resample to the diffuse size.
+    Inverted-convention maps (fill bright, leaves dark) are flipped so
+    alpha always means coverage."""
     dw, dh, drgba = decode_mip0(reassemble(diff_path))
     ow, oh, orgba = decode_mip0(reassemble(opacity_path))
     if all(v == 255 for v in orgba[3::4]):
@@ -240,7 +256,8 @@ def merge_opacity_alpha(diff_path, opacity_path):
         mask = bytes(max(orgba[i], orgba[i + 1], orgba[i + 2])
                      for i in range(0, len(orgba), 4))
     else:
-        mask = orgba[3::4]
+        mask = bytes(orgba[3::4])
+    mask, inverted = _orient_mask(mask)
     if (ow, oh) != (dw, dh):
         # bilinear resample of the alpha channel
         resampled = bytearray(dw * dh)
@@ -272,4 +289,18 @@ def merge_opacity_alpha(diff_path, opacity_path):
         drgba[3::4] = resampled
     else:
         drgba[3::4] = mask
-    return _rgba_dds(dw, dh, drgba)
+    return _rgba_dds(dw, dh, drgba), inverted
+
+
+def reassemble_mask(path):
+    """Reassemble a diffuse DDS for an alpha-tested material and normalize
+    the alpha channel's orientation (same convention as
+    merge_opacity_alpha). Returns (DDS bytes, inverted) — the original
+    reassembled bytes when the alpha was already coverage-oriented."""
+    data = reassemble(path)
+    w, h, rgba = decode_mip0(data)
+    mask, inverted = _orient_mask(rgba[3::4])
+    if not inverted:
+        return data, False
+    rgba[3::4] = mask
+    return _rgba_dds(w, h, rgba), True

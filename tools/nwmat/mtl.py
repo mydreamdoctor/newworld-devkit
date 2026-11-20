@@ -208,7 +208,13 @@ def _slice_mtl_map(mesh_path):
             _slice_mtl_map_cache[arena_src] = json.load(open(p))
         except Exception:
             _slice_mtl_map_cache[arena_src] = {}
-    return _slice_mtl_map_cache[arena_src].get(rel)
+    hit = _slice_mtl_map_cache[arena_src].get(rel)
+    if hit is None:
+        # LOD cgfs (foo_lod1.cgf) are not placed entities; they inherit the
+        # base cgf's per-entity material assignment.
+        hit = _slice_mtl_map_cache[arena_src].get(
+            re.sub(r'_lod\d+\.cgf$', '.cgf', rel))
+    return hit
 
 
 def find_mtl_for_mesh(mesh_path, mat_names):
