@@ -348,7 +348,7 @@ def register():
     desc = azlmbr.asset.builder.AssetBuilderDesc()
     desc.name = 'NW CGF Builder'
     desc.busId = BUS_ID
-    desc.version = 31
+    desc.version = 32
     pats = []
     for pat in ('*.cgf', '*.cgfheap', '*.skin'):
         p = azlmbr.asset.builder.AssetBuilderPattern()

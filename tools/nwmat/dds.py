@@ -248,6 +248,17 @@ def merge_opacity_alpha(diff_path, opacity_path):
     Inverted-convention maps (fill bright, leaves dark) are flipped so
     alpha always means coverage."""
     dw, dh, drgba = decode_mip0(reassemble(diff_path))
+    da = drgba[3::4]
+    lo = sum(1 for v in da[::7] if v < 26)
+    hi = sum(1 for v in da[::7] if v > 230)
+    n = len(da[::7])
+    if lo > 0.05 * n and hi > 0.05 * n:
+        # The diffuse already carries a clean binary coverage mask (leaf
+        # shapes at 1.0, background at 0.0). NW's separate Opacity maps for
+        # these materials are low-contrast soft masks (values bunched around
+        # 0.35-0.4) that a 0.5 cutout discards entirely -- prefer the
+        # diffuse's own alpha.
+        return _rgba_dds(dw, dh, drgba), False
     ow, oh, orgba = decode_mip0(reassemble(opacity_path))
     if all(v == 255 for v in orgba[3::4]):
         # Opacity stored as a grayscale RGB mask (e.g. BC1) rather than in
