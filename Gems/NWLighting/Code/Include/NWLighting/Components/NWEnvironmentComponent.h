@@ -8,7 +8,6 @@
 #include <AzCore/Component/Component.h>
 #include <AzCore/Component/TickBus.h>
 #include <AzCore/Math/Color.h>
-#include <Atom/Feature/CoreLights/DirectionalLightFeatureProcessorInterface.h>
 
 namespace NWLighting
 {
@@ -77,11 +76,7 @@ namespace NWLighting
 
     private:
         void ApplyConfiguration();
-        void ApplyHemisphereAmbient();
 
         NWEnvironmentConfig m_config;
-        AZ::Render::DirectionalLightFeatureProcessorInterface* m_featureProcessor = nullptr;
-        AZ::Render::DirectionalLightFeatureProcessorInterface::LightHandle m_skyLight;
-        AZ::Render::DirectionalLightFeatureProcessorInterface::LightHandle m_groundLight;
     };
 } // namespace NWLighting

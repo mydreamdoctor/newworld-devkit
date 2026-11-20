@@ -125,6 +125,20 @@ def _aux_ents(prefab, camera_pos, camera_rot, light=None):
                                 'assetHint': 'lightingpresets/lowcontrast/'
                                              'blau_river_4k_iblskyboxcm_iblspecular'
                                              '.exr.streamingimage'}}})]),
+        ('nw_skyfill', (-90.0, 0.0, 0.0),
+         [nw2level.comp('AZ::Render::EditorDirectionalLightComponent',
+                        Controller={'Configuration': {
+                            'Intensity': light.get('ambient_intensity', 0.35),
+                            'Color': list(light.get('sky_color', (0.42, 0.56, 0.78))),
+                            'CameraEntityId': '',
+                            'ShadowEnabled': False}})]),
+        ('nw_groundfill', (90.0, 0.0, 0.0),
+         [nw2level.comp('AZ::Render::EditorDirectionalLightComponent',
+                        Controller={'Configuration': {
+                            'Intensity': light.get('ambient_intensity', 0.35) * 0.6,
+                            'Color': list(light.get('ground_color', (0.28, 0.24, 0.19))),
+                            'CameraEntityId': '',
+                            'ShadowEnabled': False}})]),
         ('devkit_camera', list(camera_rot),
          [nw2level.comp(
              '{CA11DA46-29FF-4083-B5F6-E02C3A8C3A3D} '

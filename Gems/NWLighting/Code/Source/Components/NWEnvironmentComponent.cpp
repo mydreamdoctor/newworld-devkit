@@ -5,7 +5,9 @@
 
 #include <NWLighting/Components/NWEnvironmentComponent.h>
 
-#include <Atom/RPI.Public/Scene.h>
+#include <AzCore/Component/ComponentApplicationBus.h>
+#include <AzCore/Component/Entity.h>
+#include <AzCore/EBus/Event.h>
 #include <AtomLyIntegration/CommonFeatures/CoreLights/DirectionalLightBus.h>
 #include <AtomLyIntegration/CommonFeatures/ImageBasedLights/ImageBasedLightComponentBus.h>
 #include <AtomLyIntegration/CommonFeatures/ScreenSpace/DeferredFogBus.h>
@@ -122,8 +124,7 @@ namespace NWLighting
 
     void NWEnvironmentComponent::Activate()
     {
-        // The feature processor path is disabled: acquiring directional
-        // light handles during editor level load is not safe in this build.
+
         // Apply on the first tick: during level load the render scene and
         // sibling components are not necessarily ready at activation time.
         AZ::TickBus::Handler::BusConnect();
@@ -139,13 +140,7 @@ namespace NWLighting
 
     void NWEnvironmentComponent::Deactivate()
     {
-        if (m_featureProcessor)
-        {
-            m_featureProcessor->ReleaseLight(m_skyLight);
-            m_featureProcessor->ReleaseLight(m_groundLight);
-        }
         AZ::TickBus::Handler::BusDisconnect();
-        m_featureProcessor = nullptr;
     }
 
     void NWEnvironmentComponent::SetConfiguration(const NWEnvironmentConfig& config)
@@ -187,37 +182,6 @@ namespace NWLighting
                 &AZ::Render::DeferredFogRequestsBus::Events::SetFogEndDistance, m_config.m_fogEndDistance);
         }
 
-        ApplyHemisphereAmbient();
     }
 
-    void NWEnvironmentComponent::ApplyHemisphereAmbient()
-    {
-        if (!m_featureProcessor)
-        {
-            return;
-        }
-
-        // Two shadowless directional lights approximate the game's
-        // hemisphere lighting: sky colour from above, ground bounce from
-        // below. This gives foliage and stone their ambient tint without
-        // the grey cast of a photographic IBL.
-        const float intensity = m_config.m_ambientIntensity;
-        const AZ::Vector3 skyDirection(0.0f, 0.0f, -1.0f);
-        const AZ::Vector3 groundDirection(0.0f, 0.0f, 1.0f);
-
-        const AZ::Vector3 skyRgb = m_config.m_skyColor.GetAsVector3() * intensity;
-        const AZ::Vector3 groundRgb = m_config.m_groundColor.GetAsVector3() * intensity * 0.6f;
-        const AZ::Render::PhotometricColor<AZ::Render::PhotometricUnit::Lux> skyColor(
-            AZ::Color(skyRgb.GetX(), skyRgb.GetY(), skyRgb.GetZ(), 1.0f));
-        const AZ::Render::PhotometricColor<AZ::Render::PhotometricUnit::Lux> groundColor(
-            AZ::Color(groundRgb.GetX(), groundRgb.GetY(), groundRgb.GetZ(), 1.0f));
-
-        m_featureProcessor->SetShadowEnabled(m_skyLight, false);
-        m_featureProcessor->SetDirection(m_skyLight, skyDirection);
-        m_featureProcessor->SetRgbIntensity(m_skyLight, skyColor);
-
-        m_featureProcessor->SetShadowEnabled(m_groundLight, false);
-        m_featureProcessor->SetDirection(m_groundLight, groundDirection);
-        m_featureProcessor->SetRgbIntensity(m_groundLight, groundColor);
-    }
 } // namespace NWLighting
