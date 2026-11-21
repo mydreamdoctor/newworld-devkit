@@ -158,3 +158,36 @@
   `mission_mission0.xml` or the TOD).
   `GameData.pak` entries are Oodle-compressed (zip method 15); read them
   with `tools/nwpak/nwpak._read_entry`, not `zipfile.read`.
+- **Two-layer fog: design of record (owner decision 2026-11-21).** The owner
+  wants New World's two fog layers rendered as they are in the game, so the
+  work is split deliberately:
+  1. **Render (engine):** extend the existing `DeferredFogPass` rather than
+     write a new pass. Its SRG constants are generated from
+     `Gems/Atom/Feature/Common/Code/Include/Atom/Feature/ScreenSpace/
+     DeferredFogParams.inl` through the `AZ_GFX_*_PARAM` macros, which also
+     produce the settings members, the serialize context and the editor
+     component's data elements — so new fields cost one line each in that
+     file plus a UI element in
+     `AtomLyIntegration/CommonFeatures/.../EditorDeferredFogComponent.cpp`.
+     Missing SRG bindings are tolerated (`if (MemberName##SrgIndex.IsValid())`),
+     so params can land before the shader uses them.
+     Shader: `Gems/Atom/Feature/Common/Assets/Shaders/ScreenSpace/DeferredFog.azsl`.
+     The pass is a `FullscreenTrianglePass`; `MainPS` already computes the
+     ray/slab intersection, so a second layer means running that math for a
+     second (minHeight, maxHeight) and compositing
+     `a = 1-(1-a1)(1-a2)`, `c = (c1*a1 + c2*a2*(1-a1))/a`.
+     New params needed: `FogColorTop`, `FogDensityTop` (layer 1 ramp),
+     `FogLayer2Enabled`, `FogColor2`, `FogColorTop2`, `FogMinHeight2`,
+     `FogMaxHeight2`, `FogDensity2`, `FogDensityTop2`. Default the ramps to
+     their bottom values and layer 2 to off so existing levels do not change.
+  2. **Data/authoring (gem `NWFog`):** a component whose fields are NW's TOD
+     fog variables one-for-one (no O3DE concepts), TOD import on load,
+     TOD write-back on export into an overlay pak (see `tools/nwpak/nwpak.py`),
+     and a bus that drives the fog pass for preview. The TOD is spline-based:
+     default behaviour is to edit the value at the level's `Time` by
+     inserting/replacing that key, not to rewrite the whole day.
+  What cannot be matched, and must be stated in the UI: NW's second layer is
+  ray-marched volumetric fog with sun/ambient shadowing, per-source
+  anisotropy, in-scattering and extinction, and a zenith fade. O3DE's pass is
+  analytic and screen-space. Two-layer analytic fog reproduces the TOD's
+  heights, density ramps and colours; it does not reproduce the scattering.
