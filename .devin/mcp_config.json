@@ -5,6 +5,12 @@
       "env": {
         "O3DE_ENGINE_PATH": "/home/lachlan/development/newworld-devkit"
       }
+    },
+    "newworld-index": {
+      "command": "/home/lachlan/ghidra-projects/newworld-index-mcp/.venv/bin/python",
+      "args": [
+        "/mnt/dev_scratch/newworld/tools/ghidra/index_mcp/server.py"
+      ]
     }
   }
 }
