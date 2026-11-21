@@ -1,4 +1,16 @@
-"""New World ground-cover vegetation import.
+"""NOT PART OF THE IMPORT PATH — reconstruction aid only.
+
+This module scatters ground-cover models at positions the game does not
+contain. That is acceptable for a look-and-feel experiment and WRONG for
+the kit's actual job, which is a faithful round trip: anything the editor
+shows may be written back to New World, so invented content is a defect.
+The faithful ground cover lives in Coatlicue's ``region.vegetation`` (see
+AGENTS.md); until that format is decoded this gap stays a gap.
+
+Kept because the model collection, prefab emission and asset-id lookup
+are reusable once real instance positions are available.
+
+New World ground-cover vegetation import.
 
 The game scatters its ground cover with Coatlicue's procedural vegetation
 system (``region.vegetation`` inside ``VegetationStrm*.pak``). That file is

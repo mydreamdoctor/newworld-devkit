@@ -32,7 +32,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', 'nwslice'))
 
 import nw2level
-import nwveg
 import terrainjson as _tj
 from heightmap import decode, encode
 import slice2prefab
@@ -351,10 +350,6 @@ def main():
                 json.dump(cpf, f, indent=1)
             print('  %s: %d entities' % (cname, len(group)))
         print('wrote %d chunk prefabs to %s' % (ci + 1, chunk_dir))
-        deck = nwveg.bake_deck_cover(chunk_dir, nwveg.collect_models(a.slice))
-        if deck:
-            print('deck ground cover: %d clumps on floor/stair pieces'
-                  % deck)
 
     if a.chunks and a.at:
         cx, cy, cz = a.at  # art moved to chunks; aim at the placement
@@ -385,12 +380,7 @@ def main():
                     os.path.join(lvl_dir, 'terrain_src.json'))
     print('wrote %s (%d entities)' % (ppath, len(prefab['Entities'])))
 
-    veg = nwveg.apply(ppath, a.out, a.slice, (cx, cy, cz))
-    if veg['entity']:
-        print('vegetation: %d ground-cover models on %s, box %s at %s'
-              % (veg['models'], veg['entity'],
-                 [round(v, 1) for v in veg['size']],
-                 [round(v, 1) for v in veg['centre']]))
+
 
 
 if __name__ == '__main__':

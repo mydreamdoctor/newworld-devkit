@@ -83,6 +83,23 @@
   A long-lived display at `/run/user/1000/devkit1` (DISPLAY `:2`) may already
   exist — reuse it. Always kill Editor + gamescope when done.
 
+- 🔴 **THE KIT IS A ROUND TRIP, NOT A VIEWER (owner, 2026-11-21).** Users
+  import New World assets, edit them in the editor, and export them back to
+  New World. That second half is as critical as the first, so **the pipeline
+  must not invent, move or reinterpret anything on the way through**: no
+  synthetic entities, no repositioned terrain, no re-derived transforms, no
+  "make it look right" content. If the editor shows it, it can be written
+  back, and a fabricated value becomes a broken game asset. When the game
+  has something we cannot yet import, the honest answer is a named gap and
+  a decoder for the real data — never a stand-in.
+  Concretely: `tools/nwslice/prefab2slice.py` (the save path) re-parses the
+  ORIGINAL .dynamicslice and patches only GameTransformComponent m_worldTM
+  and SplineComponent vertices; prefab entities that match no slice entity
+  are reported and left untouched, and slice entities the prefab dropped are
+  reported, not deleted. It never adds entities. So an O3DE-only entity
+  (sun, sky, fog, camera) is harmless to the export — but any *transform*
+  difference in the view is written back, which is why positions must never
+  be nudged for looks.
 - **Ground-cover vegetation (2026-11-21).** The arena's own slice data holds
   only ~140 artist-placed ground-cover clumps; the dense carpet in the game
   comes from Coatlicue's procedural vegetation system, whose data is
