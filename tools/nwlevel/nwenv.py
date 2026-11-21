@@ -18,6 +18,7 @@ defaults.
 
 import math
 import os
+import sys
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -97,6 +98,108 @@ def find_level_pak(level_dir, level_name=None):
                      '/home/lachlan/nwclient-c2/assets/levels'):
             cands.append(os.path.join(root, base, 'level.pak'))
     return next((p for p in cands if os.path.isfile(p)), None)
+
+
+CLIENT_ASSET_ROOTS = ('/home/lachlan/nwclient-frozen-20261022/assets',
+                      '/home/lachlan/nwclient-c2/assets')
+
+# Fog variables in a CryEngine time-of-day file. NW's fog is a height
+# layer: a density at the bottom height and another at the top height,
+# plus a colour at each. The <Fog ViewDistance> in mission_mission0.xml
+# is a culling distance, not the visual fog.
+TOD_FOG_VARS = {
+    'fog_color': 'Fog color',
+    'fog_color_top': 'Fog color (top)',
+    'fog_height_bottom': 'Fog height (bottom)',
+    'fog_height_top': 'Fog height (top)',
+    'fog_density_bottom': 'Fog layer density (bottom)',
+    'fog_density_top': 'Fog layer density (top)',
+    'vol_density': 'Volumetric fog: Global density',
+    'vol_ramp_start': 'Volumetric fog: Ramp start',
+    'vol_ramp_end': 'Volumetric fog: Ramp end',
+    'vol2_height_bottom': 'Volumetric fog 2: Fog height (bottom)',
+    'vol2_height_top': 'Volumetric fog 2: Fog height (top)',
+    'vol2_density_bottom': 'Volumetric fog 2: Fog layer density (bottom)',
+    'vol2_density_top': 'Volumetric fog 2: Fog layer density (top)',
+    'vol2_ramp_start': 'Volumetric fog 2: Ramp start',
+    'vol2_ramp_end': 'Volumetric fog 2: Ramp end',
+    'vol2_albedo': 'Volumetric fog 2: Fog albedo color (atmosphere)',
+}
+
+
+def _find_pak_entry(entry, roots=None):
+    """(pak path, bytes) for the first pak that carries `entry`."""
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'nwpak'))
+    import nwpak
+    for root in (roots or CLIENT_ASSET_ROOTS):
+        if not os.path.isdir(root):
+            continue
+        for pak in sorted(os.listdir(root)):
+            if not pak.lower().endswith('.pak'):
+                continue
+            path = os.path.join(root, pak)
+            try:
+                return path, nwpak._read_entry(path, entry)
+            except (KeyError, OSError, zipfile.BadZipFile, RuntimeError):
+                continue
+    return None, None
+
+
+def read_timeofday(level_name, roots=None):
+    """Fog settings from the level's own time-of-day file.
+
+    NW names it in the level's resourcelist as
+    ``libs/timeofday/modes/<level>.xml``; the file lives in GameData.pak.
+    Each ``<Variable>`` carries the value already evaluated at the level's
+    ``Time``, so no spline evaluation is needed.
+    """
+    entry = 'libs/timeofday/modes/%s.xml' % level_name
+    _pak, data = _find_pak_entry(entry, roots)
+    if not data:
+        return {}
+    try:
+        root = ET.fromstring(data.decode('utf8', 'replace'))
+    except ET.ParseError:
+        return {}
+    out = {'time': root.get('Time')}
+    for key, name in TOD_FOG_VARS.items():
+        for v in root.iter('Variable'):
+            if v.get('Name') != name:
+                continue
+            raw = v.get('Color') or v.get('Value')
+            if raw is None:
+                continue
+            try:
+                out[key] = (_floats(raw) if ',' in raw else float(raw))
+            except ValueError:
+                pass
+            break
+    return out
+
+
+def fog_config(tod):
+    """NW time-of-day fog -> the values our level's fog entity carries.
+
+    The primary layer is NW's ``Fog`` height layer; O3DE's deferred fog is
+    the same shape (a slab between two world heights with a density), so
+    the game's own numbers go straight through.
+    """
+    if not tod:
+        return {}
+    out = {}
+    if 'fog_height_bottom' in tod and 'fog_height_top' in tod:
+        out['fog_min_height'] = tod['fog_height_bottom']
+        out['fog_max_height'] = tod['fog_height_top']
+    if 'fog_color' in tod:
+        out['fog_color'] = tod['fog_color']
+    if 'fog_density_bottom' in tod:
+        out['fog_density'] = tod['fog_density_bottom']
+    for key in ('vol2_albedo', 'vol2_height_bottom', 'vol2_height_top',
+                'vol_ramp_start', 'vol_ramp_end', 'time'):
+        if key in tod:
+            out[key] = tod[key]
+    return out
 
 
 def lighting_config(env, sun_color=DEFAULT_SUN_COLOR,

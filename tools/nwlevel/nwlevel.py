@@ -77,12 +77,13 @@ def _merge_slice(prefab, slice_raw, resolver=None, missing=None):
     return len(remap), skipped
 
 
-def _aux_ents(prefab, camera_pos, camera_rot, light=None):
+def _aux_ents(prefab, camera_pos, camera_rot, light=None, fog=None):
     # Lighting comes from the game level's own environment block
     # (mission_mission0.xml inside level.pak, parsed by nwenv). The
     # Physical sky replaces the HDRi photo skybox; the blau_river IBL
     # pair provides ambient lighting only -- it is not rendered.
     light = light or {}
+    fog = fog or {}
     sun_rot = light.get('sun_rotation', (-55.0, 0.0, 25.0))
     sun_color = light.get('sun_color', nwenv.DEFAULT_SUN_COLOR)
     sun_intensity = light.get('sun_intensity', nwenv.DEFAULT_SUN_INTENSITY)
@@ -95,7 +96,7 @@ def _aux_ents(prefab, camera_pos, camera_rot, light=None):
                             'Intensity': sun_intensity,
                             'Color': list(sun_color),
                             'CameraEntityId': '',
-                            'ShadowFilterMethod': 1}}),
+                            'ShadowFilterMethod': 1}})]),
 
         ('sky', None,
          [nw2level.comp('AZ::Render::EditorPhysicalSkyComponent',
@@ -128,18 +129,23 @@ def _aux_ents(prefab, camera_pos, camera_rot, light=None):
                             'CameraEntityId': '',
                             'ShadowEnabled': False}})]),
         # Deferred fog is a horizontal LAYER between FogMinHeight and
-        # FogMaxHeight in world Z. The component defaults are 0.01..1.0,
-        # so a level whose ground sits at Z=100 gets no fog at all until
-        # those are widened to bracket the level.
+        # FogMaxHeight in world Z, and NW's fog is the same shape: the
+        # level's time-of-day file gives a density and a colour at a bottom
+        # and a top height. Those numbers are absolute world Z in both
+        # engines, so they go straight through. (The component defaults are
+        # 0.01..1.0 -- a one-metre slab at Z 0..1 -- which is why a level
+        # whose ground sits at Z~100 showed no fog at all.)
         ('nw_fog', None,
          [nw2level.comp('AZ::Render::EditorDeferredFogComponent',
                         Controller={'Configuration': {
-                            'FogColor': list(light.get('fog_color',
-                                                       (0.42, 0.52, 0.55))),
-                            'FogStartDistance': light.get('fog_start', 12.0),
-                            'FogEndDistance': light.get('fog_end', 180.0),
-                            'FogMinHeight': -1000.0,
-                            'FogMaxHeight': 3000.0}}),
+                            'FogColor': list(fog.get('fog_color',
+                                                     (0.45, 0.45, 0.6))),
+                            'FogMode': 1,          # Exponential, as in NW
+                            'FogDensity': fog.get('fog_density', 0.33),
+                            'FogStartDistance': 1.0,
+                            'FogEndDistance': 5.0,
+                            'FogMinHeight': fog.get('fog_min_height', 0.01),
+                            'FogMaxHeight': fog.get('fog_max_height', 1.0)}}),
           nw2level.comp('AZ::Render::EditorPostFxLayerComponent')]),
         ('devkit_camera', list(camera_rot),
          [nw2level.comp(
@@ -366,8 +372,19 @@ def main():
                  env.get('fog_view_distance')))
     else:
         print('lighting: no environment data found, using defaults')
+    tod = nwenv.read_timeofday(os.path.basename(
+        os.path.dirname(pak)) if pak else a.name)
+    fog = nwenv.fog_config(tod)
+    if fog:
+        print('fog from time-of-day t=%s: colour=%s layer %s..%s m, '
+              'density=%s' % (fog.get('time'), fog.get('fog_color'),
+                              fog.get('fog_min_height'),
+                              fog.get('fog_max_height'),
+                              fog.get('fog_density')))
+    else:
+        print('fog: no time-of-day data found')
     prefab['Entities'].update(_aux_ents(prefab, cam, rot,
-                                        nwenv.lighting_config(env)))
+                                        nwenv.lighting_config(env), fog))
     print('camera at %s toward centroid %s' % (cam, (cx, cy, cz)))
 
     ppath = os.path.join(lvl_dir, a.name + '.prefab')

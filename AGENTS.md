@@ -138,3 +138,23 @@
   that chunk's `SlicePlacement`, so the baker adds the placement translate
   to reach world space. The level loader picks the file up through its
   `chunks/chunk_*.prefab` glob.
+- **Fog comes from the time-of-day file, not the level (2026-11-21).** The
+  `<Fog ViewDistance="14336">` in `mission_mission0.xml` is a **culling**
+  distance, not the visual fog. New World's actual fog is in
+  `libs/timeofday/modes/<level>.xml` (in `GameData.pak`, named by the
+  level's `resourcelist.txt`) as `<Variable Name="...">` entries whose
+  `Value`/`Color` attribute is already evaluated at the level's `Time`.
+  For `nw_arena_3v3_04` at t=8.83: `Fog color` 0.217/0.411/0.686,
+  `Fog height (bottom)` 0, `Fog layer density (bottom)` 0.05,
+  `Fog height (top)` 400, `Fog layer density (top)` 0.02, plus a second
+  volumetric layer at heights 90..500 with albedo 0.521/0.939/0.982.
+  That is the *same shape* as O3DE's deferred fog (a slab between two world
+  heights with a density), and both engines' heights are absolute world Z,
+  so `nwenv.read_timeofday()` / `nwenv.fog_config()` pass the game's own
+  numbers through: `FogMinHeight`/`FogMaxHeight` 0/400, `FogColor` the TOD
+  colour, `FogMode` 1 (Exponential), `FogDensity` the bottom-layer density.
+  Nothing here is invented — it is the level's own data, which is why it is
+  safe to keep in the level's fog entity (the save path never writes
+  `mission_mission0.xml` or the TOD).
+  `GameData.pak` entries are Oodle-compressed (zip method 15); read them
+  with `tools/nwpak/nwpak._read_entry`, not `zipfile.read`.
