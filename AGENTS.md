@@ -1,13 +1,15 @@
 # Rules for this repo (NW dev kit on O3DE)
 
-- 🔴 **Store ALL facts in graphiti.** Every fact learned about this repo, the NW
-  formats, the client, the build, or the project's decisions MUST be persisted to
-  the graphiti MCP server (`mcp__graphiti__add_memory`) with
-  `group_id: "newworld-devkit"`. Do not keep findings only in chat, plan logs or
-  docs — if it is worth remembering, it goes into the graph.
-- 🔴 **Query graphiti first.** Before answering questions about this repo or
-  starting a step, search the store: `search_nodes` / `search_memory_facts` with
-  `group_ids: "newworld-devkit"`.
+- 🔴 **Store ALL facts in the knowledge base.** Every fact learned about this repo, the NW
+  formats, the client, the build, or the project's decisions MUST be stored with
+  newworld-index `kb_add` (group "newworld-devkit"). The fields are: kind
+  (finding|lesson|run|tooling), claim (1-3 plain sentences), source
+  (path:line@commit, exe:sha256@0xADDR, run:ID or capture:N), and quote (exact
+  supporting text). Do not keep findings only in chat, plan logs or docs.
+- 🔴 **Query the knowledge base first.** Before answering questions about this repo or
+  starting a step, search with newworld-index `kb_search` (query, group
+  "newworld-devkit"), `kb_at` (addr) for a client address, and `kb_read` (id) to
+  open a hit. The earlier Graphiti findings for this repo are in it.
 - Repo boundary: change files only inside this repo; writes outside need owner
   permission. Lumberyard/CryEngine sources are leads-only (cite file:line,
   never copy).
@@ -17,7 +19,7 @@
   and pushing this repo to `development` after each plan step. These are
   standing permissions, not one-time approvals.
 - Build/test layout: everything under `build/` (gitignored). Verified recipe and
-  stage-1 findings are in the graphiti store and in `NW-STAGE1-FINDINGS.md`.
+  stage-1 findings are in the knowledge base and in `NW-STAGE1-FINDINGS.md`.
 - 🔴 **Check free RAM before launching the Editor or AssetProcessor.** This host
   is shared with other heavy work and the machine has OOM-crashed once already.
   Run `free -g` first; if free+cache is under ~24 GiB, do not launch — tell the
