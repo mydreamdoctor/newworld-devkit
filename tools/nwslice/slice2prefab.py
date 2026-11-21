@@ -396,6 +396,7 @@ def _emit_slice(raw, ents, skipped, counter, place_tm, resolver, missing,
         clist = list(_transform_comp(eff) if eff else _transform_comp(
             [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]))
         unmapped = []
+        emitted_instances = False
         for tname, cel in comps.items():
             if tname in ('GameTransformComponent', 'AZ::Component',
                          'TransformComponent', 'PrefabSpawnerComponent'):
@@ -453,12 +454,18 @@ def _emit_slice(raw, ents, skipped, counter, place_tm, resolver, missing,
                             'Components': {'Component_[%d]' % j: c
                                            for j, c in enumerate(ic)}}
                     if insts:
+                        emitted_instances = True
                         continue
                 except Exception:
                     pass
             unmapped.append(tname)
         if unmapped:
             skipped[name or eid] = unmapped
+        # An entity whose only renderable content was an instanced mesh has
+        # already been emitted as one entity per instance; do not also emit
+        # the empty shell (that doubled the entity count).
+        if emitted_instances and len(clist) <= 1:
+            continue
         ents[eid] = {
             'Id': eid, 'Name': name or eid,
             'Components': {'Component_[%d]' % j: c for j, c in enumerate(clist)}}
@@ -470,6 +477,17 @@ def convert(raw, level_name='Level', resolver=None, place_tm=None,
     skipped = {}
     _emit_slice(raw, ents, skipped, [1], place_tm, resolver,
                 missing if missing is not None else set(), 0)
+    # Drop transform-only leaves: records with no renderable component and
+    # no children render nothing, but they make up about 40% of a slice and
+    # inflate the entity count (and load time) with no visible effect.
+    parented = set()
+    for e in ents.values():
+        for c in e.get('Components', {}).values():
+            if isinstance(c, dict) and c.get('Parent Entity'):
+                parented.add(c['Parent Entity'])
+    for eid in [k for k, e in ents.items()
+                if len(e.get('Components', {})) <= 1 and k not in parented]:
+        del ents[eid]
     prefab = {
         'ContainerEntity': {
             'Id': 'Entity_[1]', 'Name': level_name,
