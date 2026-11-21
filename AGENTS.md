@@ -82,3 +82,25 @@
   drive input with `DISPLAY=$D xdotool` (XTEST, no `--window` on key/click).
   A long-lived display at `/run/user/1000/devkit1` (DISPLAY `:2`) may already
   exist — reuse it. Always kill Editor + gamescope when done.
+
+- **Ground-cover vegetation (2026-11-21).** The arena's own slice data holds
+  only ~140 artist-placed ground-cover clumps; the dense carpet in the game
+  comes from Coatlicue's procedural vegetation system, whose data is
+  `sharedassets/coatlicue/<level>/regions/r_+00_+00/region.vegetation`
+  (162 MB, quantised, undocumented format, in `VegetationStrm*.pak`). The
+  level's `resourcelist.txt` names it; `leveldata/vegetationmap.dat` is a dev
+  asset and is not shipped.
+  `tools/nwlevel/nwveg.py` rebuilds the cover from data we can read: it
+  collects the ground-cover models (`*groundcover*`, `*flatgreens*`, `*fern*`)
+  the level's foliage slices place, writes one single-mesh prefab per model to
+  `<project>/nwveg/`, resolves each prefab's spawnable asset id from
+  `Cache/assetdb.sqlite`, and adds an `nw_vegetation` entity to the level
+  prefab. `nwlevel.py` calls it at the end of a level build.
+  **The project must enable the `Vegetation` gem** (`gem_names` in the
+  project's `project.json`) or the components will not resolve.
+  O3DE's Vegetation gem spawns *prefabs*, not meshes, and only samples
+  `SurfaceData` — i.e. terrain. Vegetation therefore does not appear on the
+  arena's raised floor deck (mesh geometry ~1-3 m above the terrain); that
+  needs `SurfaceDataMeshComponent` on the floor meshes or explicit
+  placements. Instance density is the gem's own system setting (sector point
+  density 20 per 16 m sector = ~1.56 instances/m^2 by default).

@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', 'nwslice'))
 
 import nw2level
+import nwveg
 import terrainjson as _tj
 from heightmap import decode, encode
 import slice2prefab
@@ -96,19 +97,7 @@ def _aux_ents(prefab, camera_pos, camera_rot, light=None):
                             'Color': list(sun_color),
                             'CameraEntityId': '',
                             'ShadowFilterMethod': 1}}),
-          nw2level.comp('{9ACB9419-4293-4CC4-AE23-1A980B1E8373} '
-                        'NWEnvironmentComponent',
-                        Configuration={
-                            'SunColor': list(sun_color) + [1.0],
-                            'SunIntensity': sun_intensity,
-                            'SkyColor': [0.42, 0.56, 0.78, 1.0],
-                            'GroundColor': [0.28, 0.24, 0.19, 1.0],
-                            'AmbientIntensity': 0.35,
-                            'ApplyFog': bool(light.get('fog_view_distance')),
-                            'FogColor': [0.72, 0.76, 0.82, 1.0],
-                            'FogStartDistance': 40.0,
-                            'FogEndDistance': 400.0,
-                            'IblExposure': 1.0})]),
+
         ('sky', None,
          [nw2level.comp('AZ::Render::EditorPhysicalSkyComponent',
                         Controller={'Configuration': {}}),
@@ -377,6 +366,13 @@ def main():
     shutil.copyfile(os.path.join(src, 'terrain.json'),
                     os.path.join(lvl_dir, 'terrain_src.json'))
     print('wrote %s (%d entities)' % (ppath, len(prefab['Entities'])))
+
+    veg = nwveg.apply(ppath, a.out, a.slice, (cx, cy, cz))
+    if veg['entity']:
+        print('vegetation: %d ground-cover models on %s, box %s at %s'
+              % (veg['models'], veg['entity'],
+                 [round(v, 1) for v in veg['size']],
+                 [round(v, 1) for v in veg['centre']]))
 
 
 if __name__ == '__main__':
