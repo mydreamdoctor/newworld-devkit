@@ -35,6 +35,7 @@ import slice2prefab  # noqa: E402
 TRANSFORM_COMPONENT = '{27F1E1A1-8D9D-4C3B-BD3A-AFB9762449C0}'
 VEG_DIR = 'nwveg'
 ENTITY_NAME = 'nw_vegetation'
+DECK_ENTITY_NAME = 'nw_vegetation_deck'
 
 # Models the game uses for low ground cover rather than for bushes/trees.
 GROUND_COVER = re.compile(r'(groundcover|flatgreens|fern)', re.I)
@@ -153,21 +154,26 @@ def asset_id(project_root, prefab_rel):
 
 
 def descriptors(project_root, written):
-    total = sum(c for _r, c in written) or 1
     out = []
-    for rel, count in written:
+    for rel, _count in written:
         guid, sub = asset_id(project_root, rel)
+        # Only the instance spawner is written: the editor's own serialized
+        # form omits the remaining fields, and an enum written as a string
+        # here makes the prefab patch fail ("not a valid index").
         out.append({
-            'SpawnerType': 'Prefab',
             'InstanceSpawner': {'SpawnableAsset': {
                 'assetId': {'guid': guid, 'subId': sub},
-                'assetHint': rel[:-len('.prefab')] + '.spawnable'}},
-            'Weight': round(max(count, 1) / total, 4)})
+                'assetHint': rel[:-len('.prefab')] + '.spawnable'}}})
     return out
 
 
-def vegetation_entity(centre, size, descs):
-    """Level entity that scatters `descs` over the terrain in a box."""
+def vegetation_entity(centre, size, descs, lift=0.0):
+    """Level entity that scatters `descs` over the terrain in a box.
+
+    `lift` raises every instance by that many metres. It exists because
+    O3DE's vegetation only samples SurfaceData, i.e. the terrain, and a
+    level whose walkable floor is a mesh deck above the terrain needs the
+    cover lifted onto the deck."""
     empty_gradient = {'GradientId': ''}
     return {
         'Name': ENTITY_NAME,
@@ -183,8 +189,12 @@ def vegetation_entity(centre, size, descs):
             'EditorPositionModifierComponent': {
                 '$type': 'EditorPositionModifierComponent',
                 'Configuration': {
+                    # A lifted layer must not re-snap to the terrain, or the
+                    # lift is cancelled and the instances stay underground.
+                    'AutoSnapToSurface': lift == 0.0,
                     'RangeMinX': -0.4, 'RangeMaxX': 0.4, 'GradientX': empty_gradient,
                     'RangeMinY': -0.4, 'RangeMaxY': 0.4, 'GradientY': empty_gradient,
+                    'RangeMinZ': lift, 'RangeMaxZ': lift,
                     'GradientZ': empty_gradient}},
             'EditorRotationModifierComponent': {
                 '$type': 'EditorRotationModifierComponent',
@@ -224,7 +234,7 @@ def _slice_bounds(slice_paths):
 
 
 def apply(level_prefab_path, project_root, slice_paths, centre=None,
-          size=None):
+          size=None, deck_lift=None, deck_size=None):
     """Add the vegetation layer to a level prefab. Returns a summary dict."""
     models = collect_models(slice_paths)
     if not models:
@@ -257,10 +267,31 @@ def apply(level_prefab_path, project_root, slice_paths, centre=None,
     ent = vegetation_entity(centre, size, descs)
     ent['Id'] = eid
     level['Entities'][eid] = ent
+    layers = [{'entity': eid, 'lift': 0.0, 'size': list(size)}]
+
+    deck_id = next((k for k, e in level['Entities'].items()
+                    if e.get('Name') == DECK_ENTITY_NAME), None)
+    if deck_lift is not None:
+        if deck_id is None:
+            n = 1 + max([int(m.group(1)) for k in level['Entities']
+                         for m in [re.search(r'Entity_\[(\d+)\]', k)] if m]
+                        + [1])
+            deck_id = 'Entity_[%d]' % n
+        dent = vegetation_entity(centre, deck_size or size, descs,
+                                 lift=deck_lift)
+        dent['Name'] = DECK_ENTITY_NAME
+        dent['Id'] = deck_id
+        level['Entities'][deck_id] = dent
+        layers.append({'entity': deck_id, 'lift': deck_lift,
+                       'size': list(deck_size or size)})
+    elif deck_id is not None:
+        del level['Entities'][deck_id]
+
     with open(level_prefab_path, 'w') as f:
         json.dump(level, f, indent=1)
     return {'models': len(written), 'entity': eid,
             'centre': list(centre), 'size': list(size),
+            'layers': layers,
             'prefabs': [r for r, _c in written]}
 
 
@@ -271,9 +302,15 @@ def main():
     ap.add_argument('--project', required=True, help='O3DE project root')
     ap.add_argument('--slice', required=True, nargs='+')
     ap.add_argument('--at', nargs=3, type=float, default=None)
+    ap.add_argument('--deck-lift', type=float, default=None,
+                    help='metres to raise a second layer onto a mesh floor '
+                         'deck that sits above the terrain')
+    ap.add_argument('--deck-size', nargs=3, type=float, default=None)
     a = ap.parse_args()
     print(apply(a.level_prefab, a.project, a.slice,
-                tuple(a.at) if a.at else None))
+                tuple(a.at) if a.at else None,
+                deck_lift=a.deck_lift,
+                deck_size=tuple(a.deck_size) if a.deck_size else None))
 
 
 if __name__ == '__main__':
