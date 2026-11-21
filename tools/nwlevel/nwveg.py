@@ -36,6 +36,8 @@ TRANSFORM_COMPONENT = '{27F1E1A1-8D9D-4C3B-BD3A-AFB9762449C0}'
 VEG_DIR = 'nwveg'
 ENTITY_NAME = 'nw_vegetation'
 DECK_ENTITY_NAME = 'nw_vegetation_deck'
+# Prefab the level loader instantiates with the chunks: clumps on the deck.
+DECK_CHUNK = 'chunk_99_veg.prefab'
 
 # Models the game uses for low ground cover rather than for bushes/trees.
 GROUND_COVER = re.compile(r'(groundcover|flatgreens|fern)', re.I)
@@ -210,6 +212,96 @@ def vegetation_entity(centre, size, descs, lift=0.0):
                 'Parent Entity': 'Entity_[1]',
                 'Transform Data': {'Translate': list(centre)}},
         }}
+
+
+def bake_deck_cover(chunk_dir, models, per_tile=3, seed=1):
+    """Ground-cover clumps standing on the level's floor geometry.
+
+    O3DE's vegetation only samples SurfaceData (terrain). A level whose
+    walkable floor is a mesh deck above the terrain gets no cover at all
+    from the spawner, so bake clumps onto the deck's own floor and stair
+    pieces instead: one small prefab the level loader instantiates with
+    the chunks.
+
+    `models` is {cgf path: weight}; `per_tile` clumps are placed on each
+    floor/stair piece with a jitter, random yaw and a scale spread.
+    """
+    import glob
+    import random
+
+    rng = random.Random(seed)
+    tiles = []
+    for path in sorted(glob.glob(os.path.join(chunk_dir, 'chunk_*.prefab'))):
+        if os.path.basename(path) == DECK_CHUNK:
+            continue
+        try:
+            prefab = json.load(open(path))
+        except (OSError, ValueError):
+            continue
+        # Chunk entities are local to the chunk's SlicePlacement; the deck
+        # clumps go straight into the level, so lift them to world space.
+        place = [0.0, 0.0, 0.0]
+        for ent in prefab.get('Entities', {}).values():
+            if ent.get('Name') == 'SlicePlacement':
+                place = ent['Components']['Component_[0]'] \
+                    .get('Transform Data', {}).get('Translate', place)
+                break
+        for ent in prefab.get('Entities', {}).values():
+            tr = ent['Components'].get('Component_[0]', {}) \
+                .get('Transform Data', {}).get('Translate')
+            if not tr or ent.get('Name') == 'SlicePlacement':
+                continue
+            for comp in ent['Components'].values():
+                hint = (comp.get('Controller', {}).get('Configuration', {})
+                        .get('ModelAsset', {}) or {}).get('assetHint', '')
+                stem = hint.rsplit('/', 1)[-1].lower()
+                if 'floor' in stem or 'stairs' in stem:
+                    tiles.append(([tr[i] + place[i] for i in range(3)], hint))
+                    break
+    if not tiles:
+        return 0
+
+    pool = sorted(models.items())
+    weights = [w for _m, w in pool]
+    ents = {}
+    counter = 1
+    cid = 1
+    for tr, _hint in tiles:
+        for _ in range(per_tile):
+            cgf = rng.choices([m for m, _w in pool], weights=weights)[0]
+            counter += 1
+            eid = 'Entity_[%d]' % counter
+            cid += 2
+            ents[eid] = {
+                'Id': eid, 'Name': 'veg_deck_%d' % counter,
+                'Components': {
+                    'Component_[0]': {
+                        '$type': TRANSFORM_COMPONENT, 'Id': cid,
+                        'Transform Data': {
+                            'Translate': [round(tr[0] + rng.uniform(-0.9, 0.9), 3),
+                                          round(tr[1] + rng.uniform(-0.9, 0.9), 3),
+                                          round(tr[2] + 0.12, 3)],
+                            'Rotate': [0.0, 0.0, round(rng.uniform(0.0, 360.0), 2)],
+                            'Scale': [round(rng.uniform(0.75, 1.3), 3)] * 3},
+                        'Parent Entity': 'Entity_[1]'},
+                    'Component_[1]': {
+                        '$type': 'AZ::Render::EditorMeshComponent', 'Id': cid + 1,
+                        'Controller': {'Configuration': {
+                            'ModelAsset': slice2prefab._model_asset(cgf)}}}}}
+
+    out = {
+        'ContainerEntity': {
+            'Id': 'Entity_[1]', 'Name': DECK_CHUNK[:-len('.prefab')],
+            'Components': {
+                'Component_[0]': {
+                    '$type': TRANSFORM_COMPONENT, 'Id': 2,
+                    'Transform Data': {'Translate': [0.0, 0.0, 0.0]},
+                    'Parent Entity': ''},
+                'Component_[1]': {'$type': 'EditorPrefabComponent', 'Id': 3}}},
+        'Entities': ents}
+    with open(os.path.join(chunk_dir, DECK_CHUNK), 'w') as f:
+        json.dump(out, f, indent=1)
+    return len(ents)
 
 
 def _slice_bounds(slice_paths):

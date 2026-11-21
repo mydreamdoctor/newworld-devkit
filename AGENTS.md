@@ -104,3 +104,20 @@
   needs `SurfaceDataMeshComponent` on the floor meshes or explicit
   placements. Instance density is the gem's own system setting (sector point
   density 20 per 16 m sector = ~1.56 instances/m^2 by default).
+- **Deferred fog is a horizontal LAYER, not a global volume (2026-11-21).**
+  `AZ::Render::DeferredFogComponentConfig` (Gems/Atom/Feature/Common/Code/
+  Include/Atom/Feature/ScreenSpace/DeferredFogParams.inl) defaults to
+  `FogMinHeight=0.01`, `FogMaxHeight=1.0`, i.e. a one-metre slab at world
+  Z 0..1. A level whose ground sits at Z~100 therefore renders **no fog at
+  all** however the colour/distances are set — that was the "zero fog" bug.
+  `nwlevel._aux_ents` now emits `nw_fog` with `FogMinHeight=-1000`,
+  `FogMaxHeight=3000`; widen those for any level outside that band. The
+  entity also needs an `EditorPostFxLayerComponent` for `PostFXLayerService`.
+- **Ground cover on a mesh deck (2026-11-21).** O3DE's Vegetation gem samples
+  `SurfaceData`, which is terrain only. `nwveg.bake_deck_cover()` therefore
+  writes `Levels/<level>/chunks/chunk_99_veg.prefab` with ground-cover
+  clumps standing on the level's own `*floor*`/`*stairs*` mesh pieces (3 per
+  piece, jittered, random yaw, 0.75-1.3 scale). Chunk entities are local to
+  that chunk's `SlicePlacement`, so the baker adds the placement translate
+  to reach world space. The level loader picks the file up through its
+  `chunks/chunk_*.prefab` glob.

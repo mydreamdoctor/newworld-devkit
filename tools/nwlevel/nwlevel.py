@@ -128,6 +128,20 @@ def _aux_ents(prefab, camera_pos, camera_rot, light=None):
                             'Color': list(light.get('ground_color', (0.28, 0.24, 0.19))),
                             'CameraEntityId': '',
                             'ShadowEnabled': False}})]),
+        # Deferred fog is a horizontal LAYER between FogMinHeight and
+        # FogMaxHeight in world Z. The component defaults are 0.01..1.0,
+        # so a level whose ground sits at Z=100 gets no fog at all until
+        # those are widened to bracket the level.
+        ('nw_fog', None,
+         [nw2level.comp('AZ::Render::EditorDeferredFogComponent',
+                        Controller={'Configuration': {
+                            'FogColor': list(light.get('fog_color',
+                                                       (0.42, 0.52, 0.55))),
+                            'FogStartDistance': light.get('fog_start', 12.0),
+                            'FogEndDistance': light.get('fog_end', 180.0),
+                            'FogMinHeight': -1000.0,
+                            'FogMaxHeight': 3000.0}}),
+          nw2level.comp('AZ::Render::EditorPostFxLayerComponent')]),
         ('devkit_camera', list(camera_rot),
          [nw2level.comp(
              '{CA11DA46-29FF-4083-B5F6-E02C3A8C3A3D} '
@@ -337,6 +351,10 @@ def main():
                 json.dump(cpf, f, indent=1)
             print('  %s: %d entities' % (cname, len(group)))
         print('wrote %d chunk prefabs to %s' % (ci + 1, chunk_dir))
+        deck = nwveg.bake_deck_cover(chunk_dir, nwveg.collect_models(a.slice))
+        if deck:
+            print('deck ground cover: %d clumps on floor/stair pieces'
+                  % deck)
 
     if a.chunks and a.at:
         cx, cy, cz = a.at  # art moved to chunks; aim at the placement
